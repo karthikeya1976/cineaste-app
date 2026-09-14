@@ -111,20 +111,36 @@ export default function CreatorProfilePage() {
           <StatBox value={profile.credits} label="Credits" />
         </div>
 
-        {/* Enroute / Deroute */}
-        <button
-          onClick={toggleFollow}
-          style={{
-            width: "100%", padding: "10px", fontSize: "14px", fontWeight: 600,
-            borderRadius: "10px", cursor: "pointer",
-            background: following ? "transparent" : "var(--accent)",
-            color: following ? "var(--fg-muted)" : "#fff",
-            border: following ? "1px solid var(--border)" : "none",
-            transition: "all 0.15s",
-          }}
-        >
-          {following ? "Deroute" : "Enroute"}
-        </button>
+        {/* Enroute / Deroute + Message */}
+        <div style={{ display: "flex", gap: "10px" }}>
+          <button
+            onClick={toggleFollow}
+            style={{
+              flex: 1, padding: "10px", fontSize: "14px", fontWeight: 600,
+              borderRadius: "10px", cursor: "pointer",
+              background: following ? "transparent" : "var(--accent)",
+              color: following ? "var(--fg-muted)" : "#fff",
+              border: following ? "1px solid var(--border)" : "none",
+              transition: "all 0.15s",
+            }}
+          >
+            {following ? "Deroute" : "Enroute"}
+          </button>
+          <button
+            onClick={() => {
+              if (!isLoggedIn()) { router.push("/"); return; }
+              router.push(`/messages?to=${profile.id}&name=${encodeURIComponent(profile.name)}&type=${profile.account_type}`);
+            }}
+            style={{
+              flex: 1, padding: "10px", fontSize: "14px", fontWeight: 600,
+              borderRadius: "10px", cursor: "pointer",
+              background: "transparent", color: "var(--fg)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            Message
+          </button>
+        </div>
       </div>
 
       {/* About row */}
