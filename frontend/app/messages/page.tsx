@@ -9,8 +9,8 @@
 // account_types, not just creators) for lookup and the ID-keyed
 // GET /keys/:userId/bundle for the prekey fetch.
 
-import { useState, useRef, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState, useRef, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   searchUsers,
   getPreKeyBundle,
@@ -43,13 +43,42 @@ const btnSecondary: React.CSSProperties = {
   border: "1px solid var(--border)", borderRadius: "8px", cursor: "pointer",
 };
 
+// useSearchParams requires a Suspense boundary in the App Router — this
+// page has no other reason to suspend, but the hook itself does during
+// the initial static shell render.
 export default function MessagesSearchPage() {
+  return (
+    <Suspense fallback={null}>
+      <MessagesSearchPageInner />
+    </Suspense>
+  );
+}
+
+function MessagesSearchPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Deep-link entry point: another page (e.g. a creator's profile, via its
+  // Message button) can jump straight into composing to a known user —
+  // ?to=<id>&name=<name>&type=<account_type> — skipping the search step
+  // entirely, rather than making the sender re-find someone they already
+  // found once. Computed once as the initial state (not in an effect —
+  // there's no actual side effect here, just deriving day-one state from
+  // the URL, which react-hooks' set-state-in-effect rule correctly steers
+  // away from an effect for; same principle as app/profile/page.tsx's own
+  // "state read, not fetched" comment).
+  const deepLinkTarget = (): DirectoryUser | null => {
+    const to = searchParams.get("to");
+    const name = searchParams.get("name");
+    if (!to || !name) return null;
+    return { id: to, name, account_type: searchParams.get("type") ?? "" };
+  };
+
   const [q, setQ] = useState("");
   const [results, setResults] = useState<DirectoryUser[] | null>(null);
   const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState<Step>("idle");
-  const [target, setTarget] = useState<DirectoryUser | null>(null);
+  const [step, setStep] = useState<Step>(() => (deepLinkTarget() ? "found" : "idle"));
+  const [target, setTarget] = useState<DirectoryUser | null>(deepLinkTarget);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
