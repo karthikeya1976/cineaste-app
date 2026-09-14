@@ -8,7 +8,7 @@
 // call for the whole list), falling back to a short id fragment for any id
 // the lookup doesn't return rather than blocking or erroring the list.
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   listPendingRequests,
@@ -54,30 +54,30 @@ export default function RequestsPage() {
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const { requests } = await listPendingRequests();
-      setRequests(requests);
-      // One batch call for every sender on the page, not one lookup per row.
-      const senderIds = requests.map((r) => r.senderId);
-      if (senderIds.length > 0) {
-        const resolved = await resolveUserNames(senderIds);
-        setNames((prev) => ({ ...prev, ...resolved }));
-      }
-    } catch {
-      setError("Could not load requests.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // Mount-time fetch runs as a promise chain rather than an async function
+  // invoked by reference — matches app/feed/page.tsx's CommentDrawer
+  // pattern, which keeps the effect body itself synchronous (react-hooks'
+  // set-state-in-effect rule flags a synchronously-called async function
+  // that sets state, even though the actual setState calls only happen
+  // after an internal await).
   useEffect(() => {
     if (!isLoggedIn()) {
       router.replace("/");
       return;
     }
-    load();
-  }, [router, load]);
+    listPendingRequests()
+      .then(({ requests }) => {
+        setRequests(requests);
+        // One batch call for every sender on the page, not one lookup per row.
+        const senderIds = requests.map((r) => r.senderId);
+        if (senderIds.length === 0) return;
+        return resolveUserNames(senderIds).then((resolved) => {
+          setNames((prev) => ({ ...prev, ...resolved }));
+        });
+      })
+      .catch(() => setError("Could not load requests."))
+      .finally(() => setLoading(false));
+  }, [router]);
 
   async function handleAccept(req: ChatRequestSummary) {
     setBusyId(req.id);

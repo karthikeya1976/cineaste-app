@@ -78,7 +78,15 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
       router.replace("/");
       return;
     }
-    load();
+    // The initial call is deferred behind a resolved-promise `.then()`
+    // rather than invoked directly, so the effect body itself stays
+    // synchronous (react-hooks' set-state-in-effect rule flags a
+    // synchronously-called function that sets state, even one that only
+    // actually sets state after an internal await) — see
+    // app/feed/page.tsx's CommentDrawer for the same pattern. The
+    // interval's own callback invocations are unaffected either way,
+    // since they run later, not synchronously within this effect.
+    Promise.resolve().then(load);
     const interval = setInterval(load, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [router, load]);
