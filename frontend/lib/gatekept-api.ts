@@ -7,6 +7,7 @@
 // Gatekept's backend no longer has handle-keyed routes at all.
 
 import { getToken } from "./auth";
+import { generatePlaceholderIdentity } from "./gatekept-crypto";
 
 const API_BASE = "/api/gatekept";
 
@@ -61,6 +62,34 @@ export function getPreKeyBundle(userId: string) {
 
 export function getScannerBundle() {
   return request<PreKeyBundleResponse>("/v1/scanner/bundle");
+}
+
+// ── First-use key registration ───────────────────────────────────────────
+//
+// POST /v1/identity/register-keys is the replacement for Gatekept's old
+// account creation: a logged-in Editor Club user's first messaging
+// interaction registers their (placeholder) key material under their
+// already-verified identity — no client anywhere ever called this before
+// this fix, which meant NO user had a Gatekept-side row until they
+// happened to be looked up by someone else first, so both sending a first
+// message (needs the RECIPIENT's bundle) and being messaged (needs the
+// SENDER'S row to exist for chat_requests' FK) 404'd with "User" not found
+// for every real account. Every /messages/* page calls ensureRegistered()
+// once per browser session (sessionStorage-gated, not on every navigation)
+// before doing anything else — safe to call repeatedly regardless, since
+// the backend's upsertMessagingProfile is an idempotent ON CONFLICT UPDATE.
+const REGISTERED_FLAG_KEY = "gatekept_registered";
+
+export async function ensureRegistered(): Promise<void> {
+  if (typeof window === "undefined") return;
+  if (sessionStorage.getItem(REGISTERED_FLAG_KEY) === "1") return;
+
+  const identity = generatePlaceholderIdentity();
+  await request<{ id: string }>("/v1/identity/register-keys", {
+    method: "POST",
+    body: JSON.stringify(identity),
+  });
+  sessionStorage.setItem(REGISTERED_FLAG_KEY, "1");
 }
 
 // ── Chat requests ─────────────────────────────────────────────────────────

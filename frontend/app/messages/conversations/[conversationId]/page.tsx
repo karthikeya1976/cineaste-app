@@ -14,6 +14,7 @@ import {
   blockUser,
   fileReport,
   resolveUserNames,
+  ensureRegistered,
   ApiError,
   type MessageSummary,
 } from "@/lib/gatekept-api";
@@ -86,6 +87,7 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
     // app/feed/page.tsx's CommentDrawer for the same pattern. The
     // interval's own callback invocations are unaffected either way,
     // since they run later, not synchronously within this effect.
+    void ensureRegistered().catch(() => {});
     Promise.resolve().then(load);
     const interval = setInterval(load, POLL_INTERVAL_MS);
     return () => clearInterval(interval);

@@ -16,6 +16,7 @@ import {
   getPreKeyBundle,
   getScannerBundle,
   sendChatRequest,
+  ensureRegistered,
   ApiError,
   type DirectoryUser,
 } from "@/lib/gatekept-api";
@@ -87,7 +88,20 @@ function MessagesSearchPageInner() {
   const me = getUser();
 
   useEffect(() => {
-    if (!isLoggedIn()) router.replace("/");
+    if (!isLoggedIn()) {
+      router.replace("/");
+      return;
+    }
+    // Register this user's (placeholder) key material on Gatekept the
+    // first time they touch messaging in this browser session — see
+    // ensureRegistered()'s own comment for why this was missing entirely
+    // and what it broke (every real account 404'd as "User" not found,
+    // both when messaging someone and when being messaged).
+    void ensureRegistered().catch(() => {
+      // A failed registration surfaces naturally when a real action (send,
+      // bundle fetch) needs it and fails — no need to block or error the
+      // page just for arriving on it.
+    });
   }, [router]);
 
   // Debounced search: fires 400ms after the user stops typing, same pattern

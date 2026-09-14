@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { login, register } from "@/lib/api";
 import { setAuth, isLoggedIn } from "@/lib/auth";
+import { ensureRegistered } from "@/lib/gatekept-api";
 
 export default function AuthPage() {
   const router = useRouter();
@@ -37,6 +38,14 @@ export default function AuthPage() {
           account_type: "viewer",
         });
       }
+      // Register this account's (placeholder) Gatekept key material right
+      // after auth succeeds — not only when the user happens to open
+      // Messages. Otherwise a sender can only ever message someone who has
+      // already opened Messages themselves at least once, since a
+      // recipient must have a Gatekept-side row before anyone can look up
+      // their prekey bundle (see lib/gatekept-api.ts's ensureRegistered).
+      // Fire-and-forget: Gatekept being unreachable shouldn't block login.
+      void ensureRegistered().catch(() => {});
       router.push("/feed");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Something went wrong");

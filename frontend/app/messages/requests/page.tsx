@@ -17,6 +17,7 @@ import {
   blockUser,
   fileReport,
   resolveUserNames,
+  ensureRegistered,
   ApiError,
   type ChatRequestSummary,
 } from "@/lib/gatekept-api";
@@ -65,6 +66,10 @@ export default function RequestsPage() {
       router.replace("/");
       return;
     }
+    // Accepting a request creates a conversation row FK-referencing this
+    // user's own Gatekept row — must exist before Accept can succeed. See
+    // lib/gatekept-api.ts's ensureRegistered() for the full story.
+    void ensureRegistered().catch(() => {});
     listPendingRequests()
       .then(({ requests }) => {
         setRequests(requests);

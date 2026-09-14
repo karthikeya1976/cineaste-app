@@ -8,7 +8,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { listConversations, resolveUserNames, type ConversationSummary } from "@/lib/gatekept-api";
+import { listConversations, resolveUserNames, ensureRegistered, type ConversationSummary } from "@/lib/gatekept-api";
 import { isLoggedIn } from "@/lib/auth";
 
 const STATUS_LABEL: Record<ConversationSummary["status"], string> = {
@@ -47,6 +47,7 @@ export default function ConversationsPage() {
       router.replace("/");
       return;
     }
+    void ensureRegistered().catch(() => {});
     load();
   }, [router, load]);
 
