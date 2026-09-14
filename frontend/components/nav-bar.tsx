@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Search, Upload, User } from "lucide-react";
+import { Home, Search, Upload, User, MessageCircle } from "lucide-react";
 import { isLoggedIn, isCreator } from "@/lib/auth";
 
 type NavItem = {
@@ -13,9 +13,10 @@ type NavItem = {
 };
 
 const NAV_ITEMS: NavItem[] = [
-  { href: "/feed",    label: "Home",    icon: <Home   size={20} /> },
-  { href: "/search",  label: "Search",  icon: <Search size={20} /> },
-  { href: "/upload",  label: "Upload",  icon: <Upload size={20} />, creatorOnly: true },
+  { href: "/feed",     label: "Home",     icon: <Home          size={20} /> },
+  { href: "/search",   label: "Search",   icon: <Search        size={20} /> },
+  { href: "/messages", label: "Messages", icon: <MessageCircle size={20} /> },
+  { href: "/upload",   label: "Upload",   icon: <Upload        size={20} />, creatorOnly: true },
 ];
 
 export default function NavBar() {
