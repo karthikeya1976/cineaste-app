@@ -360,6 +360,43 @@ def search(query: str) -> dict:
     return {"creators": creators, "videos": videos}
 
 
+def search_users(query: str) -> list:
+    """Search all users (any account_type) by name. Used by the messaging 'find people' flow."""
+    like = f"%{query}%"
+
+    sql = """
+        SELECT id, name, account_type
+        FROM users
+        WHERE name ILIKE %s
+        LIMIT 10
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (like,))
+            users = [dict(r) for r in cur.fetchall()]
+
+    for u in users:
+        u["id"] = str(u["id"])
+    return users
+
+
+def search_users_by_ids(ids: list[str]) -> list:
+    """Batch-resolve user IDs to {id, name, account_type}. Missing IDs are silently omitted."""
+    sql = """
+        SELECT id, name, account_type
+        FROM users
+        WHERE id::text = ANY(%s)
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (ids,))
+            users = [dict(r) for r in cur.fetchall()]
+
+    for u in users:
+        u["id"] = str(u["id"])
+    return users
+
+
 # ── Comments ──────────────────────────────────────────────────────────────────
 
 def add_comment(video_id: str, body: str, user_id: Optional[str] = None) -> dict:

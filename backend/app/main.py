@@ -256,6 +256,26 @@ def search(q: str = "") -> dict:
     return db.search(q.strip())
 
 
+class SearchUsersByIdsRequest(BaseModel):
+    ids: list[str]
+
+
+@app.get("/search-users")
+def search_users(q: str = "", user_id: str = Depends(_require_auth)) -> list:
+    if not q.strip():
+        return []
+    return db.search_users(q.strip())
+
+
+@app.post("/search-users/by-ids")
+def search_users_by_ids(req: SearchUsersByIdsRequest, user_id: str = Depends(_require_auth)) -> list:
+    if not req.ids:
+        return []
+    if len(req.ids) > 50:
+        raise HTTPException(status_code=400, detail="Cannot look up more than 50 IDs per call")
+    return db.search_users_by_ids(req.ids)
+
+
 # ── Comments ──────────────────────────────────────────────────────────────────
 
 class CommentRequest(BaseModel):
