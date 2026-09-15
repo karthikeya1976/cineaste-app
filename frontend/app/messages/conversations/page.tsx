@@ -10,6 +10,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { listConversations, resolveUserNames, ensureRegistered, type ConversationSummary } from "@/lib/gatekept-api";
 import { isLoggedIn } from "@/lib/auth";
+import { isConversationUnread, clearUnreadConversation, subscribeUnreadRows } from "@/lib/gatekept-notifications";
 
 const STATUS_LABEL: Record<ConversationSummary["status"], string> = {
   active: "Active",
@@ -27,6 +28,15 @@ export default function ConversationsPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [names, setNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  // Bumped on every unread-row change so this component re-renders — see
+  // messages/requests/page.tsx's identical pattern; the underlying state
+  // lives in gatekept-notifications' plain module store, shared with the
+  // nav dot and toast stack.
+  const [, forceRerender] = useState(0);
+
+  useEffect(() => {
+    return subscribeUnreadRows(() => forceRerender((n) => n + 1));
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -79,10 +89,13 @@ export default function ConversationsPage() {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-          {conversations.map((c) => (
+          {conversations.map((c) => {
+            const unread = isConversationUnread(c.id);
+            return (
             <Link
               key={c.id}
               href={`/messages/conversations/${c.id}`}
+              onClick={() => clearUnreadConversation(c.id)}
               style={{
                 background: "var(--surface)", border: "1px solid var(--border)",
                 borderRadius: "12px", padding: "14px 16px",
@@ -90,7 +103,10 @@ export default function ConversationsPage() {
                 gap: "14px", textDecoration: "none",
               }}
             >
-              <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--fg)" }}>
+              <span style={{ fontSize: "14px", fontWeight: unread ? 700 : 600, color: "var(--fg)", display: "flex", alignItems: "center", gap: "6px" }}>
+                {unread && (
+                  <span aria-label="Unread" style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--accent)", flexShrink: 0 }} />
+                )}
                 {nameFor(names, c.otherParticipantId)}
               </span>
               <span style={{
@@ -100,7 +116,8 @@ export default function ConversationsPage() {
                 {STATUS_LABEL[c.status]}
               </span>
             </Link>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
