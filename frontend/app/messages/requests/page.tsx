@@ -24,6 +24,7 @@ import {
 import { placeholderDecrypt } from "@/lib/gatekept-crypto";
 import { CryptoNotice } from "@/components/CryptoNotice";
 import { isLoggedIn } from "@/lib/auth";
+import { isChatRequestUnread, clearUnreadChatRequest, subscribeUnreadRows } from "@/lib/gatekept-notifications";
 
 const btnPrimary: React.CSSProperties = {
   padding: "8px 14px", fontSize: "13px", fontWeight: 600,
@@ -54,6 +55,14 @@ export default function RequestsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Bumped on every unread-row change so this component re-renders — the
+  // underlying unread state lives in gatekept-notifications' plain module
+  // store (shared with the nav dot and toast stack), not React state.
+  const [, forceRerender] = useState(0);
+
+  useEffect(() => {
+    return subscribeUnreadRows(() => forceRerender((n) => n + 1));
+  }, []);
 
   // Mount-time fetch runs as a promise chain rather than an async function
   // invoked by reference — matches app/feed/page.tsx's CommentDrawer
@@ -86,6 +95,10 @@ export default function RequestsPage() {
 
   async function handleAccept(req: ChatRequestSummary) {
     setBusyId(req.id);
+    // Opening/acting on this row clears its unread state — see the plan's
+    // Notification UI subsection: "Clears for that row the moment the user
+    // opens it."
+    clearUnreadChatRequest(req.id);
     try {
       const { conversationId } = await acceptChatRequest(req.id);
       router.push(`/messages/conversations/${conversationId}`);
@@ -97,6 +110,7 @@ export default function RequestsPage() {
 
   async function handleReject(req: ChatRequestSummary) {
     setBusyId(req.id);
+    clearUnreadChatRequest(req.id);
     try {
       await rejectChatRequest(req.id);
       setRequests((prev) => prev.filter((r) => r.id !== req.id));
@@ -109,6 +123,7 @@ export default function RequestsPage() {
 
   async function handleBlock(req: ChatRequestSummary) {
     setBusyId(req.id);
+    clearUnreadChatRequest(req.id);
     try {
       await blockUser(req.senderId, "pre_accept");
       setRequests((prev) => prev.filter((r) => r.id !== req.id));
@@ -121,6 +136,7 @@ export default function RequestsPage() {
 
   async function handleReport(req: ChatRequestSummary) {
     setBusyId(req.id);
+    clearUnreadChatRequest(req.id);
     try {
       // Pre-acceptance report — the platform already has the ciphertext and
       // its own scan verdict on file for this chat_request, so no evidence
@@ -171,9 +187,14 @@ export default function RequestsPage() {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-          {requests.map((req) => (
+          {requests.map((req) => {
+            const unread = isChatRequestUnread(req.id);
+            return (
             <div key={req.id} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
-              <p style={{ fontSize: "13px", fontWeight: 600, color: "var(--fg)", margin: 0 }}>
+              <p style={{ fontSize: "13px", fontWeight: unread ? 700 : 600, color: "var(--fg)", margin: 0, display: "flex", alignItems: "center", gap: "6px" }}>
+                {unread && (
+                  <span aria-label="Unread" style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--accent)", flexShrink: 0 }} />
+                )}
                 {nameFor(names, req.senderId)}
               </p>
               <p style={{ fontSize: "14px", color: "var(--fg)", margin: 0 }}>{placeholderDecrypt(req.ciphertext)}</p>
@@ -192,7 +213,8 @@ export default function RequestsPage() {
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
