@@ -40,7 +40,12 @@ export default function ProfilePage() {
   // reloads by design; re-checking getExistingPushSubscription() on mount
   // only tells us the browser thinks it's subscribed, not the backend row
   // id — see the effect below for how that's reconciled).
-  const [pushSupported, setPushSupported] = useState(false);
+  // Computed lazily as initial state (isPushSupported() is synchronous, same
+  // as getUser() above) rather than set from inside the effect below — a
+  // synchronous setState call as the first line of an effect body trips
+  // this codebase's react-hooks/set-state-in-effect lint rule, and there's
+  // no need for it here since the value never changes after mount.
+  const [pushSupported] = useState(isPushSupported);
   const [pushSubscriptionId, setPushSubscriptionId] = useState<string | null>(null);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushError, setPushError] = useState("");
@@ -52,9 +57,7 @@ export default function ProfilePage() {
   }, [user, router]);
 
   useEffect(() => {
-    const supported = isPushSupported();
-    setPushSupported(supported);
-    if (!supported) return;
+    if (!pushSupported) return;
     // Reflects whether the BROWSER already has an active subscription
     // (e.g. from a previous session) so the toggle doesn't show "Enable"
     // for a user who's already subscribed. The browser's PushSubscription
@@ -79,7 +82,7 @@ export default function ProfilePage() {
           // click still works normally.
         });
     });
-  }, []);
+  }, [pushSupported]);
 
   async function handleTogglePush() {
     setPushError("");
