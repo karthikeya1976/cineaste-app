@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Home, Search, Upload, User, MessageCircle } from "lucide-react";
 import { isLoggedIn, isCreator } from "@/lib/auth";
 import { getRealtimeClient, type RealtimeEvent } from "@/lib/gatekept-ws";
@@ -34,13 +34,40 @@ const NAV_DOT_CLEARING_ROUTES = ["/messages/requests", "/messages/conversations"
 export default function NavBar() {
   const pathname = usePathname();
 
-  // Auth state is read straight from localStorage on every render instead of
-  // being mirrored into useState — it's synchronous and cheap, and deriving
-  // it during render (rather than via a setState-in-effect) avoids the extra
-  // render pass React now warns about. Next.js re-renders this component on
-  // every navigation, so this naturally re-checks auth right after login/logout.
-  const loggedIn = isLoggedIn();
-  const creator = isCreator();
+  // Auth state depends on localStorage, which doesn't exist during SSR —
+  // reading it directly during render (the previous approach here) means
+  // the server always renders as logged-out while the client's very first
+  // render (before hydration settles) sees the real, already-logged-in
+  // state. That mismatch is exactly what triggers React's hydration error
+  // #418 (https://react.dev/errors/418): the server's HTML said "no nav
+  // bar" (loggedIn was false) but the client immediately tries to hydrate
+  // real nav content into that spot. Confirmed as the root cause of a real
+  // production bug: the hydration error aborts the client render before
+  // NavBar's own useEffect below (which opens the realtime WS connection)
+  // ever runs, so nothing downstream of it — badge notifications, the nav
+  // dot, live message delivery — ever activates for a real user, even
+  // though every other piece of that pipeline was verified working in
+  // isolation.
+  //
+  // Fix: useSyncExternalStore is React's designated API for exactly this
+  // "read a value from outside React that may differ between server and
+  // client" case — its getServerSnapshot always returns the SSR-safe
+  // default (false), so the initial client render and hydration match the
+  // server exactly; the real value from getSnapshot only takes effect on
+  // the very next tick, as an ordinary post-hydration update rather than a
+  // mismatch. This is also why it doesn't trip react-hooks/set-state-in-
+  // effect the way a plain `useEffect(() => setLoggedIn(...))` would — it
+  // isn't a setState call inside an effect at all.
+  //
+  // subscribe is a required parameter but auth state here only ever
+  // changes on navigation (login/logout redirect to a different route),
+  // not asynchronously out of band — pathname is already a dependency the
+  // rest of this component re-renders on, so a no-op subscribe (never
+  // calls its callback) is correct: React still recomputes the snapshot on
+  // every render this component performs for other reasons.
+  const noopSubscribe = () => () => {};
+  const loggedIn = useSyncExternalStore(noopSubscribe, isLoggedIn, () => false);
+  const creator = useSyncExternalStore(noopSubscribe, isCreator, () => false);
 
   const [navDotVisible, setNavDotVisible] = useState(isNavDotVisible);
 
