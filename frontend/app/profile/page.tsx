@@ -57,15 +57,27 @@ export default function ProfilePage() {
     if (!supported) return;
     // Reflects whether the BROWSER already has an active subscription
     // (e.g. from a previous session) so the toggle doesn't show "Enable"
-    // for a user who's already subscribed. This only tells us a
-    // subscription exists, not its backend row id — if the user then
-    // clicks to unsubscribe without ever re-subscribing in this session,
-    // pushSubscriptionId's placeholder id is enough for unsubscribeFromPush
-    // to call the browser-side PushManager.unsubscribe(); the DELETE call's
-    // 404 (unknown/mismatched id) is treated as success by that function
-    // for exactly this reason (see its own doc comment).
+    // for a user who's already subscribed. The browser's PushSubscription
+    // object carries no backend row id of its own, so a real id is
+    // recovered by re-running subscribeToPush() — POST
+    // /v1/push-subscriptions is an ON CONFLICT upsert keyed on
+    // (user_id, endpoint) (db/pushSubscriptions.ts), so re-subscribing an
+    // already-active browser subscription is a no-op against the push
+    // service itself and simply returns the existing row's real id. A
+    // placeholder id here would break unsubscribeFromPush: the DELETE
+    // route's id param is cast straight to the push_subscriptions.id
+    // BIGSERIAL column, so a non-numeric placeholder raises a Postgres
+    // type error (500), not the 404 that function is written to treat as
+    // success.
     getExistingPushSubscription().then((sub) => {
-      if (sub) setPushSubscriptionId("existing");
+      if (!sub) return;
+      subscribeToPush()
+        .then(({ id }) => setPushSubscriptionId(id))
+        .catch(() => {
+          // Best-effort reconciliation only — if this fails, the toggle
+          // falls back to showing "Enable" and a fresh subscribeToPush()
+          // click still works normally.
+        });
     });
   }, []);
 
