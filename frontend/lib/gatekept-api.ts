@@ -276,3 +276,150 @@ export async function resolveUserNames(ids: string[]): Promise<Record<string, st
   }
   return result;
 }
+
+// ── Web Push subscriptions (issue #24 / U5) ─────────────────────────────
+//
+// Thin client over the browser's native Push API
+// (navigator.serviceWorker.register + PushManager.subscribe), wired to the
+// two new backend routes (POST/DELETE /v1/push-subscriptions — see
+// gatekept/backend/src/routes/pushSubscriptions.ts). The service worker
+// itself (public/sw.js) only handles displaying an incoming push — this
+// module owns the subscribe/unsubscribe lifecycle and talking to the
+// backend, mirroring how gatekept-ws.ts owns the WebSocket connection
+// lifecycle as its own dedicated module rather than folding it into this
+// generic request() helper.
+//
+// VAPID PUBLIC KEY: exposed via a build-time NEXT_PUBLIC_ env var (Next.js's
+// standard mechanism for values that must reach the browser bundle) rather
+// than a runtime fetch — this codebase has no existing "fetch config from
+// backend" pattern to follow (next.config.ts's own BACKEND_URL/
+// GATEKEPT_BACKEND_URL constants are resolved at build/server time, not
+// fetched), and a VAPID public key is not secret (it's sent to every
+// subscribing browser and to the push service itself by design), so a
+// public build-time env var is the natural fit, not a compromise.
+const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+
+const SERVICE_WORKER_PATH = "/sw.js";
+
+/** Converts a URL-safe base64 VAPID public key string into the raw
+ *  BufferSource PushManager.subscribe's applicationServerKey option expects
+ *  — the browser Push API has no built-in base64 decoding for this.
+ *  Explicitly typed as `Uint8Array<ArrayBuffer>` (via `new
+ *  ArrayBuffer(...)` backing rather than a bare `new Uint8Array(length)`)
+ *  because TypeScript's DOM lib types `applicationServerKey` as
+ *  `BufferSource`, which requires an `ArrayBuffer`-backed view — a plain
+ *  `Uint8Array` can be backed by the wider `ArrayBufferLike` (which also
+ *  covers `SharedArrayBuffer`) and does not satisfy that constraint. */
+function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(new ArrayBuffer(rawData.length));
+  for (let i = 0; i < rawData.length; i++) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+export function isPushSupported(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    "serviceWorker" in navigator &&
+    "PushManager" in window &&
+    Boolean(VAPID_PUBLIC_KEY)
+  );
+}
+
+/** Returns the browser's current push subscription for this app, or null
+ *  if the service worker isn't registered/active or there's no active
+ *  subscription — never throws, since "not subscribed yet" is a normal
+ *  state, not an error. */
+export async function getExistingPushSubscription(): Promise<PushSubscription | null> {
+  if (!isPushSupported()) return null;
+  try {
+    const registration = await navigator.serviceWorker.getRegistration(SERVICE_WORKER_PATH);
+    if (!registration) return null;
+    return await registration.pushManager.getSubscription();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Registers the service worker (idempotent — registering an already-
+ * registered worker at the same scope is a no-op per the spec), subscribes
+ * to Web Push via the browser's native PushManager, and registers that
+ * subscription with the backend via POST /v1/push-subscriptions.
+ *
+ * Throws if push isn't supported in this browser/environment, if the user
+ * denies the notification permission prompt, or if the backend call fails
+ * — callers (the profile page's toggle) are expected to catch and surface
+ * this as a user-facing error rather than this function swallowing it,
+ * since a failed subscribe is something the user actively asked for and
+ * should know didn't work (unlike the backend's own notification sends,
+ * which fail silently by design).
+ */
+export async function subscribeToPush(): Promise<{ id: string }> {
+  if (!isPushSupported()) {
+    throw new Error("Push notifications are not supported in this browser");
+  }
+
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    throw new Error("Notification permission was not granted");
+  }
+
+  const registration = await navigator.serviceWorker.register(SERVICE_WORKER_PATH);
+  await navigator.serviceWorker.ready;
+
+  const existing = await registration.pushManager.getSubscription();
+  const subscription =
+    existing ??
+    (await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY!),
+    }));
+
+  const json = subscription.toJSON();
+  if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
+    throw new Error("Browser returned an incomplete push subscription");
+  }
+
+  return request<{ id: string }>("/v1/push-subscriptions", {
+    method: "POST",
+    body: JSON.stringify({
+      endpoint: json.endpoint,
+      keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+    }),
+  });
+}
+
+/**
+ * Unsubscribes the browser's current push subscription (if any) both
+ * locally (PushManager.unsubscribe) and on the backend (DELETE
+ * /v1/push-subscriptions/:id). `subscriptionId` is the id returned by a
+ * prior subscribeToPush() call — callers are expected to have persisted it
+ * (e.g. in the profile page's own component state or localStorage) since
+ * the browser's PushSubscription object itself carries no backend row id.
+ *
+ * Safe to call even if the browser-side subscription is already gone
+ * (e.g. the backend already deleted it after a 410) — unsubscribing
+ * locally in that case is a no-op, and the DELETE call below still runs to
+ * clean up the (possibly already-deleted) backend row; a 404 from an
+ * already-deleted row is treated as success from this function's
+ * perspective, since the end state (no subscription) is what the caller
+ * actually wants.
+ */
+export async function unsubscribeFromPush(subscriptionId: string): Promise<void> {
+  const existing = await getExistingPushSubscription();
+  if (existing) {
+    await existing.unsubscribe();
+  }
+
+  try {
+    await request<void>(`/v1/push-subscriptions/${subscriptionId}`, { method: "DELETE" });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return;
+    throw err;
+  }
+}

@@ -4,6 +4,12 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { upgradeToCreator } from "@/lib/api";
 import { getUser, setAuth, getToken, clearAuth, type AuthUser } from "@/lib/auth";
+import {
+  isPushSupported,
+  getExistingPushSubscription,
+  subscribeToPush,
+  unsubscribeFromPush,
+} from "@/lib/gatekept-api";
 
 const DEPARTMENTS = [
   "Cinematography", "Directing", "Screenwriting", "Editing",
@@ -26,11 +32,60 @@ export default function ProfilePage() {
   const [error, setError]         = useState("");
   const [success, setSuccess]     = useState("");
 
+  // issue #24 / U5: minimal push-notification toggle. `pushSubscriptionId`
+  // doubles as both "are we currently subscribed" (non-null) and the id
+  // needed to call unsubscribeFromPush — the browser's own
+  // PushSubscription object carries no backend row id of its own, so this
+  // is the only place that id lives client-side (not persisted across
+  // reloads by design; re-checking getExistingPushSubscription() on mount
+  // only tells us the browser thinks it's subscribed, not the backend row
+  // id — see the effect below for how that's reconciled).
+  const [pushSupported, setPushSupported] = useState(false);
+  const [pushSubscriptionId, setPushSubscriptionId] = useState<string | null>(null);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushError, setPushError] = useState("");
+
   // Redirecting is a real side effect (navigation), so it stays in an effect —
   // only the state read above moved out.
   useEffect(() => {
     if (!user) router.replace("/");
   }, [user, router]);
+
+  useEffect(() => {
+    const supported = isPushSupported();
+    setPushSupported(supported);
+    if (!supported) return;
+    // Reflects whether the BROWSER already has an active subscription
+    // (e.g. from a previous session) so the toggle doesn't show "Enable"
+    // for a user who's already subscribed. This only tells us a
+    // subscription exists, not its backend row id — if the user then
+    // clicks to unsubscribe without ever re-subscribing in this session,
+    // pushSubscriptionId's placeholder id is enough for unsubscribeFromPush
+    // to call the browser-side PushManager.unsubscribe(); the DELETE call's
+    // 404 (unknown/mismatched id) is treated as success by that function
+    // for exactly this reason (see its own doc comment).
+    getExistingPushSubscription().then((sub) => {
+      if (sub) setPushSubscriptionId("existing");
+    });
+  }, []);
+
+  async function handleTogglePush() {
+    setPushError("");
+    setPushBusy(true);
+    try {
+      if (pushSubscriptionId) {
+        await unsubscribeFromPush(pushSubscriptionId);
+        setPushSubscriptionId(null);
+      } else {
+        const { id } = await subscribeToPush();
+        setPushSubscriptionId(id);
+      }
+    } catch (err: unknown) {
+      setPushError(err instanceof Error ? err.message : "Failed to update push notifications");
+    } finally {
+      setPushBusy(false);
+    }
+  }
 
   async function handleUpgrade(e: React.FormEvent) {
     e.preventDefault();
@@ -141,6 +196,44 @@ export default function ProfilePage() {
       <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "14px", padding: "24px", marginBottom: "16px" }}>
         <h2 style={{ fontSize: "15px", fontWeight: 700, color: "var(--fg)", marginBottom: "4px" }}>Settings</h2>
         <p style={{ fontSize: "12px", color: "var(--fg-muted)", marginBottom: "16px" }}>Account preferences and controls</p>
+
+        {/* issue #24 / U5: Web Push toggle — a real, working control (not
+            a "Soon" placeholder like the rows below it). Only rendered
+            when this browser/environment actually supports the Push API
+            and a VAPID public key is configured (see gatekept-api.ts's
+            isPushSupported()). */}
+        {pushSupported && (
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            padding: "14px 0", borderBottom: "1px solid var(--border)",
+          }}>
+            <div>
+              <p style={{ fontWeight: 600, fontSize: "14px", color: "var(--fg)", margin: 0 }}>Push notifications</p>
+              <p style={{ fontSize: "12px", color: "var(--fg-muted)", margin: "2px 0 0" }}>
+                Browser alerts for new Gatekept messages and message requests
+              </p>
+              {pushError && (
+                <p style={{ fontSize: "11px", color: "#f87171", margin: "6px 0 0" }}>{pushError}</p>
+              )}
+            </div>
+            <button
+              onClick={handleTogglePush}
+              disabled={pushBusy}
+              style={{
+                fontSize: "12px", fontWeight: 600, padding: "6px 14px", borderRadius: "999px",
+                border: `1px solid ${pushSubscriptionId ? "var(--accent)" : "var(--border)"}`,
+                background: pushSubscriptionId ? "var(--accent-bg)" : "var(--bg)",
+                color: pushSubscriptionId ? "var(--accent)" : "var(--fg-muted)",
+                cursor: pushBusy ? "not-allowed" : "pointer",
+                opacity: pushBusy ? 0.6 : 1,
+                flexShrink: 0, marginLeft: "12px",
+              }}
+            >
+              {pushBusy ? "…" : pushSubscriptionId ? "Enabled" : "Enable"}
+            </button>
+          </div>
+        )}
+
         {[
           { label: "Notifications", desc: "Email alerts for new followers and credits" },
           { label: "Privacy", desc: "Control who can see your profile and videos" },
