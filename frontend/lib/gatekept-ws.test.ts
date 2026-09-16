@@ -301,4 +301,256 @@ describe("GatekeptRealtimeClient.disconnect", () => {
 
     expect(client.isConnected).toBe(false);
   });
+
+  it("an explicit disconnect() does not trigger a reconnect attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      mockFetchTicket();
+      const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+      const client = new GatekeptRealtimeClient();
+      const connectPromise = client.connect();
+      const socket = await waitForInstance();
+      socket.simulateConnected();
+      await connectPromise;
+
+      client.disconnect();
+      await vi.advanceTimersByTimeAsync(60000);
+
+      expect(FakeWebSocket.instances).toHaveLength(1); // no second socket ever constructed
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("GatekeptRealtimeClient.setLastSeen / getLastSeen", () => {
+  it("registers and returns a per-conversation last-seen cursor", async () => {
+    const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+    const client = new GatekeptRealtimeClient();
+
+    expect(client.getLastSeen("conv-1")).toBeNull();
+    client.setLastSeen("conv-1", 5);
+    expect(client.getLastSeen("conv-1")).toBe(5);
+    client.setLastSeen("conv-1", 9);
+    expect(client.getLastSeen("conv-1")).toBe(9);
+  });
+
+  it("passing null removes a previously-registered cursor", async () => {
+    const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+    const client = new GatekeptRealtimeClient();
+
+    client.setLastSeen("conv-1", 5);
+    client.setLastSeen("conv-1", null);
+    expect(client.getLastSeen("conv-1")).toBeNull();
+  });
+
+  it("disconnect() clears all registered last-seen cursors", async () => {
+    mockFetchTicket();
+    const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+    const client = new GatekeptRealtimeClient();
+    const connectPromise = client.connect();
+    const socket = await waitForInstance();
+    socket.simulateConnected();
+    await connectPromise;
+
+    client.setLastSeen("conv-1", 5);
+    client.disconnect();
+
+    expect(client.getLastSeen("conv-1")).toBeNull();
+  });
+});
+
+describe("GatekeptRealtimeClient.resume", () => {
+  it("sends a resume message matching KTD6's protocol", async () => {
+    mockFetchTicket();
+    const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+    const client = new GatekeptRealtimeClient();
+    const connectPromise = client.connect();
+    const socket = await waitForInstance();
+    socket.simulateConnected();
+    await connectPromise;
+
+    client.resume([{ id: "conv-1", lastSeenMessageNumber: 3 }]);
+
+    expect(socket.sent).toContain(
+      JSON.stringify({ type: "resume", conversations: [{ id: "conv-1", lastSeenMessageNumber: 3 }] })
+    );
+  });
+
+  it("is a no-op (does not throw) when not connected", async () => {
+    const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+    const client = new GatekeptRealtimeClient();
+    expect(() => client.resume([{ id: "conv-1", lastSeenMessageNumber: 3 }])).not.toThrow();
+  });
+
+  it("is a no-op for an empty conversations array", async () => {
+    mockFetchTicket();
+    const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+    const client = new GatekeptRealtimeClient();
+    const connectPromise = client.connect();
+    const socket = await waitForInstance();
+    socket.simulateConnected();
+    await connectPromise;
+
+    client.resume([]);
+
+    expect(socket.sent).toHaveLength(0);
+  });
+
+  it("dispatches a replayed message event (replayed: true) to onEvent subscribers same as a live one", async () => {
+    const { client, socket } = await connectedClient();
+    const listener = vi.fn();
+    client.onEvent(listener);
+
+    socket.simulateMessage({
+      type: "message",
+      conversationId: "c-1",
+      messageNumber: 4,
+      senderId: "u1",
+      replayed: true,
+    });
+
+    expect(listener).toHaveBeenCalledWith({
+      type: "message",
+      conversationId: "c-1",
+      messageNumber: 4,
+      senderId: "u1",
+      replayed: true,
+    });
+  });
+
+  it("dispatches a resume_fallback event to onEvent subscribers", async () => {
+    const { client, socket } = await connectedClient();
+    const listener = vi.fn();
+    client.onEvent(listener);
+
+    socket.simulateMessage({ type: "resume_fallback", conversationIds: ["c-1", "c-2"] });
+
+    expect(listener).toHaveBeenCalledWith({ type: "resume_fallback", conversationIds: ["c-1", "c-2"] });
+  });
+});
+
+async function connectedClient() {
+  mockFetchTicket();
+  const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+  const client = new GatekeptRealtimeClient();
+  const connectPromise = client.connect();
+  const socket = await waitForInstance();
+  socket.simulateConnected();
+  await connectPromise;
+  return { client, socket };
+}
+
+describe("GatekeptRealtimeClient reconnect-with-backoff", () => {
+  it("attempts a reconnect after an unrequested close, with an increasing delay", async () => {
+    vi.useFakeTimers();
+    try {
+      mockFetchTicket();
+      const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+      const client = new GatekeptRealtimeClient();
+      const connectPromise = client.connect();
+      const firstSocket = await waitForInstance();
+      firstSocket.simulateConnected();
+      await connectPromise;
+
+      // Unrequested close (e.g. network drop) — not client.disconnect().
+      firstSocket.close();
+      expect(FakeWebSocket.instances).toHaveLength(1); // no reconnect attempted yet
+
+      await vi.advanceTimersByTimeAsync(1000); // first backoff delay
+      expect(FakeWebSocket.instances).toHaveLength(2); // reconnect attempted
+
+      const secondSocket = await waitForInstance(1);
+      secondSocket.simulateConnected();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up after a bounded number of reconnect attempts (not infinite)", async () => {
+    vi.useFakeTimers();
+    try {
+      mockFetchTicket();
+      const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+      const client = new GatekeptRealtimeClient();
+      const connectPromise = client.connect();
+      const firstSocket = await waitForInstance();
+      firstSocket.simulateConnected();
+      await connectPromise;
+
+      firstSocket.close();
+
+      // Every subsequent reconnect attempt also fails immediately (its
+      // socket is closed without ever simulating 'connected') — drives the
+      // backoff schedule to exhaustion.
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(60000);
+        const latest = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+        if (latest && latest.readyState !== FakeWebSocket.CLOSED) {
+          latest.close();
+        }
+      }
+
+      const countAfterExhaustion = FakeWebSocket.instances.length;
+
+      // Advancing far beyond any conceivable further backoff produces no
+      // additional socket — retries are bounded, not infinite.
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(FakeWebSocket.instances).toHaveLength(countAfterExhaustion);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a successful reconnect automatically calls resume() with every registered last-seen cursor", async () => {
+    vi.useFakeTimers();
+    try {
+      mockFetchTicket();
+      const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+      const client = new GatekeptRealtimeClient();
+      const connectPromise = client.connect();
+      const firstSocket = await waitForInstance();
+      firstSocket.simulateConnected();
+      await connectPromise;
+
+      client.setLastSeen("conv-1", 7);
+      client.setLastSeen("conv-2", 2);
+
+      firstSocket.close();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const secondSocket = await waitForInstance(1);
+      secondSocket.simulateConnected();
+      // Let the post-connect microtask (which calls resume()) run.
+      await vi.advanceTimersByTimeAsync(0);
+
+      const sentResume = secondSocket.sent.find((s) => JSON.parse(s).type === "resume");
+      expect(sentResume).toBeDefined();
+      const parsed = JSON.parse(sentResume!);
+      expect(parsed.conversations).toEqual(
+        expect.arrayContaining([
+          { id: "conv-1", lastSeenMessageNumber: 7 },
+          { id: "conv-2", lastSeenMessageNumber: 2 },
+        ])
+      );
+      expect(parsed.conversations).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT call resume() on the very first connect (only on a genuine reconnect)", async () => {
+    mockFetchTicket();
+    const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+    const client = new GatekeptRealtimeClient();
+    client.setLastSeen("conv-1", 7);
+
+    const connectPromise = client.connect();
+    const socket = await waitForInstance();
+    socket.simulateConnected();
+    await connectPromise;
+
+    const sentResume = socket.sent.find((s) => JSON.parse(s).type === "resume");
+    expect(sentResume).toBeUndefined();
+  });
 });

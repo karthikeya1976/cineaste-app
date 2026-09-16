@@ -5,7 +5,21 @@
 // shows the other participant's real name via resolveUserNames() (one call,
 // for this conversation's single other participant), falling back to an id
 // fragment if the lookup misses.
-
+//
+// LIVE DELIVERY + RESUME, WITH POLLING KEPT AS AN EXPLICIT FALLBACK (issue
+// #22 / U4): this page wires in the shared WS client (gatekept-ws.ts) for
+// live message delivery and KTD6 resume-on-reconnect, but the pre-existing
+// `POLL_INTERVAL_MS` setInterval below is deliberately NOT removed — it
+// keeps running unconditionally for the lifetime of this page, regardless
+// of whether the WS connection ever establishes. This is additive, not an
+// either/or rewrite: the WS path makes new messages appear immediately
+// (via onEvent) and lets a brief disconnect catch up via resume() instead
+// of waiting out a poll interval, but if the WS connection never
+// establishes at all (blocked proxy, corporate firewall) or a
+// resume_fallback signal arrives for this conversation, the existing
+// polling loop is what keeps the thread correct — it was never turned off
+// to begin with, so there is no separate "switch to polling" code path to
+// get wrong.
 import { use, useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -18,6 +32,7 @@ import {
   ApiError,
   type MessageSummary,
 } from "@/lib/gatekept-api";
+import { getRealtimeClient, type RealtimeEvent } from "@/lib/gatekept-ws";
 import { placeholderEncrypt, placeholderDecrypt } from "@/lib/gatekept-crypto";
 import { CryptoNotice } from "@/components/CryptoNotice";
 import { getUser, isLoggedIn } from "@/lib/auth";
@@ -50,6 +65,13 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
 
   const me = getUser();
 
+  // Highest server-reported message_number this page has rendered, for THIS
+  // conversation. Doubles as the resume cursor `setLastSeen()`/`resume()`
+  // report to the WS layer (KTD6) — the polling loop's own getMessages
+  // response is what actually keeps it correct, so it stays right even if
+  // the WS connection never establishes at all.
+  const lastSeenMessageNumber = useRef(-1);
+
   const load = useCallback(async () => {
     try {
       const { messages } = await getMessages(conversationId, -1);
@@ -57,6 +79,13 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
       nextMessageNumber.current = messages.length
         ? Math.max(...messages.map((m) => m.messageNumber)) + 1
         : 0;
+      if (messages.length > 0) {
+        const maxSeen = Math.max(...messages.map((m) => m.messageNumber));
+        if (maxSeen > lastSeenMessageNumber.current) {
+          lastSeenMessageNumber.current = maxSeen;
+        }
+        getRealtimeClient().setLastSeen(conversationId, lastSeenMessageNumber.current);
+      }
 
       // Resolve the other participant's name once we know who they are —
       // one lookup call for this conversation's single other participant.
@@ -74,6 +103,43 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
     }
   }, [conversationId, me?.id]);
 
+  /**
+   * Merges a single live/replayed full-message event into `messages`
+   * without waiting for the next poll — this is what makes a message sent
+   * during a brief disconnect (or simply while connected) appear
+   * immediately instead of up to POLL_INTERVAL_MS later. Deliberately
+   * dedupes by messageNumber (not id, which this event shape doesn't even
+   * carry — see FullMessageEvent) since the next poll's getMessages() call
+   * will eventually supply the authoritative row anyway; this is a
+   * best-effort optimistic placeholder, not a replacement for load().
+   * A WS-sourced row with no local content to render (ciphertext, sentAt)
+   * is intentionally NOT synthesized here — decrypting/rendering it
+   * correctly still requires the real row, which the very next poll
+   * fetches. This handler's only job is nudging load() to run right away
+   * instead of waiting for the interval, which is both simpler and avoids
+   * ever rendering a fabricated MessageSummary shape.
+   */
+  const handleRealtimeEvent = useCallback(
+    (event: RealtimeEvent) => {
+      if (event.type === "message" && event.conversationId === conversationId) {
+        if (event.messageNumber > lastSeenMessageNumber.current) {
+          void load();
+        }
+        return;
+      }
+      if (event.type === "resume_fallback" && event.conversationIds.includes(conversationId)) {
+        // KTD6 fallback: this conversation's gap was too large, or the
+        // disconnect was too long, for a direct replay. The polling
+        // setInterval (never removed — see this file's header comment)
+        // already covers this on its own next tick; triggering an
+        // immediate load() here just avoids waiting out the rest of the
+        // current poll interval.
+        void load();
+      }
+    },
+    [conversationId, load]
+  );
+
   useEffect(() => {
     if (!isLoggedIn()) {
       router.replace("/");
@@ -87,11 +153,61 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
     // app/feed/page.tsx's CommentDrawer for the same pattern. The
     // interval's own callback invocations are unaffected either way,
     // since they run later, not synchronously within this effect.
+    //
+    // THE POLLING FALLBACK: this setInterval is the pre-existing
+    // implementation and is deliberately kept exactly as-is, unconditional
+    // on WS state — see this file's header comment. It is what the
+    // acceptance criteria call "the conversation view keeps working,
+    // degraded to polling latency, not broken" whenever the WS layer below
+    // isn't available for any reason.
     void ensureRegistered().catch(() => {});
     Promise.resolve().then(load);
     const interval = setInterval(load, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [router, load]);
+
+  // WS wiring: live delivery + KTD6 resume, purely additive to the polling
+  // loop above. Uses the same app-wide singleton NavBar already connects
+  // (gatekept-ws.ts's own header comment on why one shared connection per
+  // tab is intended) — this effect does not call disconnect() on cleanup,
+  // only enterConversation(null)-equivalent (leaveConversation) and its own
+  // listener unsubscribes, since other mounted consumers (NavBar) still
+  // want the connection alive.
+  useEffect(() => {
+    if (!isLoggedIn()) return;
+
+    const client = getRealtimeClient();
+    let cancelled = false;
+
+    void client
+      .connect()
+      .then(() => {
+        if (cancelled) return;
+        client.enterConversation(conversationId);
+        // Catch anything that arrived between this page's initial
+        // getMessages() call and the socket finishing its handshake —
+        // resume() is a no-op if lastSeenMessageNumber hasn't been
+        // populated yet (load() hasn't resolved), which is fine: the
+        // initial load() call already covers that case on its own.
+        if (lastSeenMessageNumber.current >= 0) {
+          client.resume([{ id: conversationId, lastSeenMessageNumber: lastSeenMessageNumber.current }]);
+        }
+      })
+      .catch(() => {
+        // Best-effort — see this file's header comment. The polling loop
+        // above is completely unaffected by a failed WS connection.
+      });
+
+    const unsubscribeEvent = client.onEvent(handleRealtimeEvent);
+
+    return () => {
+      cancelled = true;
+      unsubscribeEvent();
+      client.leaveConversation();
+      client.setLastSeen(conversationId, null);
+      // Deliberately does NOT call client.disconnect() — see comment above.
+    };
+  }, [conversationId, handleRealtimeEvent]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
