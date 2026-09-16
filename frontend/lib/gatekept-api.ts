@@ -161,7 +161,18 @@ export interface MessageSummary {
 
 export function sendMessage(
   conversationId: string,
-  payload: { ciphertext: string; ciphertextType: "prekey" | "whisper"; messageNumber: number }
+  payload: {
+    ciphertext: string;
+    ciphertextType: "prekey" | "whisper";
+    messageNumber: number;
+    // issue #26 / U6: optional attachment_ref returned by presignAttachment,
+    // set only once the corresponding S3 PUT has actually completed. Added
+    // to the existing payload type rather than a separate
+    // sendMessageWithAttachment function — the backend's sendMessage
+    // already accepted this field (messagingService.ts's SendMessageInput),
+    // this was simply never threaded through from the frontend before.
+    attachmentRef?: string;
+  }
 ) {
   return request<{ id: string; sentAt: string }>(`/v1/conversations/${conversationId}/messages`, {
     method: "POST",
@@ -172,6 +183,54 @@ export function sendMessage(
 export function getMessages(conversationId: string, since = -1) {
   return request<{ messages: MessageSummary[] }>(
     `/v1/conversations/${conversationId}/messages?since=${since}`
+  );
+}
+
+// ── Attachments (issue #26 / U6) ────────────────────────────────────────
+//
+// presignAttachment/presignAttachmentDownload are thin wrappers over the
+// backend's presign routes (gatekept/backend/src/routes/attachments.ts) —
+// they return a short-lived S3 URL, never the file bytes themselves. The
+// actual upload (PUT to uploadUrl) and download (GET from downloadUrl) go
+// directly from the browser to S3, bypassing this app's own backend and
+// the /api/gatekept proxy entirely — see the conversation page's
+// uploadAttachment() for why the PUT specifically uses XMLHttpRequest
+// rather than fetch (upload-progress events).
+
+export interface PresignAttachmentResponse {
+  uploadUrl: string;
+  attachmentRef: string;
+  filename: string;
+  expiresInSeconds: number;
+}
+
+/** POST /v1/attachments/presign — validates the declared MIME type/size
+ *  against the server's allowlist and returns a presigned PUT URL (15 min
+ *  expiry) plus the server-generated attachment_ref key. `filename` is
+ *  sent for display/metadata purposes only — the backend never uses it to
+ *  build the S3 key (see attachmentService.ts's own security comment). */
+export function presignAttachment(
+  conversationId: string,
+  filename: string,
+  mimeType: string,
+  sizeBytes: number
+) {
+  return request<PresignAttachmentResponse>("/v1/attachments/presign", {
+    method: "POST",
+    body: JSON.stringify({ conversationId, filename, mimeType, sizeBytes }),
+  });
+}
+
+/** GET /v1/attachments/:conversationId/:key/presign-download — participant-
+ *  gated exactly like message retrieval (see attachments.ts's own comment).
+ *  `key` is just the final uuid segment of the full
+ *  `message-attachments/{conversationId}/{uuid}` attachment_ref — callers
+ *  pass the whole attachment_ref in and this function extracts the segment
+ *  the route expects, so call sites never need to know the key layout. */
+export function presignAttachmentDownload(conversationId: string, attachmentRef: string) {
+  const key = attachmentRef.split("/").pop() ?? attachmentRef;
+  return request<{ downloadUrl: string; expiresInSeconds: number }>(
+    `/v1/attachments/${conversationId}/${key}/presign-download`
   );
 }
 

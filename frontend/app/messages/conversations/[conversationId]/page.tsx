@@ -29,12 +29,21 @@ import {
   fileReport,
   resolveUserNames,
   ensureRegistered,
+  presignAttachment,
   ApiError,
   type MessageSummary,
+  type PresignAttachmentResponse,
 } from "@/lib/gatekept-api";
 import { getRealtimeClient, type RealtimeEvent } from "@/lib/gatekept-ws";
 import { placeholderEncrypt, placeholderDecrypt } from "@/lib/gatekept-crypto";
 import { CryptoNotice } from "@/components/CryptoNotice";
+import {
+  AttachmentPicker,
+  type AttachmentState,
+  type PendingAttachment,
+} from "@/components/AttachmentPicker";
+import { AttachmentMessage } from "@/components/AttachmentMessage";
+import { uploadAttachment, isPresignExpired } from "@/lib/gatekept-attachments";
 import { getUser, isLoggedIn } from "@/lib/auth";
 
 const POLL_INTERVAL_MS = 3000;
@@ -60,6 +69,17 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
+  // issue #26 / U6: the four named attachment states (see
+  // components/AttachmentPicker.tsx's own header comment) — deliberately
+  // NOT folded into `sending` above, since "uploading a file" and "posting
+  // the message row" are distinct phases with their own failure modes
+  // (an upload can fail and be retried without ever touching sendMessage).
+  const [attachment, setAttachment] = useState<AttachmentState>({ kind: "idle" });
+  // Remembers the most recent presign result + when it was issued, so
+  // Retry can reuse the same presigned URL if still within its 15-minute
+  // expiry (per the issue's explicit Retry behavior) instead of always
+  // re-presigning.
+  const lastPresign = useRef<{ result: PresignAttachmentResponse; issuedAtMs: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nextMessageNumber = useRef(0);
 
@@ -213,20 +233,113 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
 
+  // issue #26 / U6, state (1) selected-unsent: purely local, sets state
+  // and generates a local blob: preview URL — no network call of any kind.
+  function handleAttachmentSelect(pending: PendingAttachment) {
+    setAttachment({ kind: "selected", file: pending.file, previewUrl: pending.previewUrl });
+  }
+
+  // issue #26 / U6, state (4) rejected-before-upload — precheckAttachment
+  // already ran (see AttachmentPicker's onSelect handler); this just
+  // records the rejection for display. No network call.
+  function handleAttachmentReject(filename: string, message: string) {
+    setAttachment({ kind: "rejected", filename, message });
+  }
+
+  // issue #26 / U6: removing a selected-but-unsent (or rejected, or
+  // failed) attachment. This is the exact path the acceptance criteria
+  // requires never call presign — it only ever clears local state and
+  // revokes the local object URL if one was created.
+  function handleAttachmentRemove() {
+    if ("previewUrl" in attachment && attachment.previewUrl) {
+      URL.revokeObjectURL(attachment.previewUrl);
+    }
+    lastPresign.current = null;
+    setAttachment({ kind: "idle" });
+  }
+
+  /**
+   * Runs the actual presign -> S3 PUT flow for the currently-selected
+   * file, updating `attachment` state through uploading -> (selected once
+   * done, ready for send) or -> failed on any error. Reused by both the
+   * initial upload-on-send path and the Retry action.
+   */
+  async function runUpload(file: File, previewUrl: string | null): Promise<string | null> {
+    setAttachment({ kind: "uploading", file, previewUrl, progress: 0 });
+    try {
+      let presign = lastPresign.current;
+      const stillFresh =
+        presign && presign.result.attachmentRef && !isPresignExpired(presign.issuedAtMs, presign.result.expiresInSeconds);
+      if (!stillFresh) {
+        const result = await presignAttachment(conversationId, file.name, file.type, file.size);
+        presign = { result, issuedAtMs: Date.now() };
+        lastPresign.current = presign;
+      }
+
+      await uploadAttachment(presign!.result.uploadUrl, file, (fraction) => {
+        setAttachment({ kind: "uploading", file, previewUrl, progress: fraction });
+      });
+
+      return presign!.result.attachmentRef;
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Upload failed.";
+      setAttachment({ kind: "failed", file, previewUrl, message });
+      return null;
+    }
+  }
+
+  // issue #26 / U6, state (3) upload-failed's Retry action: re-attempts
+  // the same presigned URL if still within its 15-minute expiry
+  // (lastPresign.current, checked inside runUpload via isPresignExpired),
+  // otherwise transparently re-presigns — the caller (this function)
+  // doesn't need to know which happened.
+  async function handleAttachmentRetry() {
+    if (attachment.kind !== "failed") return;
+    await runUpload(attachment.file, attachment.previewUrl);
+  }
+
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!draft.trim()) return;
+    const hasAttachment = attachment.kind === "selected" || attachment.kind === "failed";
+    if (!draft.trim() && !hasAttachment) return;
+    // Never send while an upload the user hasn't retried/removed is still
+    // actively failing or already sending a text-only message.
+    if (attachment.kind === "uploading") return;
+
     setSending(true);
     setError("");
 
     try {
-      const encrypted = placeholderEncrypt(draft);
+      let attachmentRef: string | undefined;
+
+      if (hasAttachment) {
+        const current = attachment as Extract<AttachmentState, { kind: "selected" | "failed" }>;
+        const ref = await runUpload(current.file, current.previewUrl);
+        if (!ref) {
+          // runUpload already transitioned state to "failed" with a
+          // message — stop here, don't post a message with no attachment
+          // when the user clearly intended to send one.
+          setSending(false);
+          return;
+        }
+        attachmentRef = ref;
+      }
+
+      const encrypted = placeholderEncrypt(draft || " ");
       await sendMessage(conversationId, {
         ciphertext: encrypted.ciphertext,
         ciphertextType: encrypted.type,
         messageNumber: nextMessageNumber.current++,
+        attachmentRef,
       });
       setDraft("");
+      if (attachment.kind !== "idle" && attachment.kind !== "rejected") {
+        if ("previewUrl" in attachment && attachment.previewUrl) {
+          URL.revokeObjectURL(attachment.previewUrl);
+        }
+      }
+      lastPresign.current = null;
+      setAttachment({ kind: "idle" });
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not send that message.");
@@ -299,6 +412,12 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
         ) : (
           messages.map((m) => {
             const mine = m.senderId === me?.id;
+            // A single-space placeholder is sent for attachment-only
+            // messages (see handleSend) so the placeholder-crypto layer
+            // always has a non-empty payload — never rendered as visible
+            // text alongside the attachment.
+            const text = placeholderDecrypt(m.ciphertext);
+            const showText = text.trim().length > 0;
             return (
               <div key={m.id} style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start" }}>
                 <div style={{
@@ -306,8 +425,12 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
                   background: mine ? "var(--accent)" : "var(--bg)",
                   color: mine ? "#fff" : "var(--fg)",
                   border: mine ? "none" : "1px solid var(--border)",
+                  display: "flex", flexDirection: "column", gap: "6px",
                 }}>
-                  {placeholderDecrypt(m.ciphertext)}
+                  {m.attachmentRef && (
+                    <AttachmentMessage conversationId={conversationId} attachmentRef={m.attachmentRef} />
+                  )}
+                  {showText && <span>{text}</span>}
                 </div>
               </div>
             );
@@ -321,7 +444,30 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
         </p>
       )}
 
+      {attachment.kind !== "idle" && (
+        <div style={{ marginTop: "12px" }}>
+          <AttachmentPicker
+            state={attachment}
+            onSelect={handleAttachmentSelect}
+            onReject={handleAttachmentReject}
+            onRemove={handleAttachmentRemove}
+            onRetry={handleAttachmentRetry}
+            disabled={sending}
+          />
+        </div>
+      )}
+
       <form onSubmit={handleSend} style={{ marginTop: "12px", display: "flex", gap: "8px" }}>
+        {attachment.kind === "idle" && (
+          <AttachmentPicker
+            state={attachment}
+            onSelect={handleAttachmentSelect}
+            onReject={handleAttachmentReject}
+            onRemove={handleAttachmentRemove}
+            onRetry={handleAttachmentRetry}
+            disabled={sending}
+          />
+        )}
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -334,12 +480,21 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
         />
         <button
           type="submit"
-          disabled={sending || !draft.trim()}
+          disabled={
+            sending ||
+            attachment.kind === "uploading" ||
+            (!draft.trim() && attachment.kind !== "selected" && attachment.kind !== "failed")
+          }
           style={{
             padding: "10px 18px", fontSize: "14px", fontWeight: 600,
             background: "var(--accent)", color: "#fff", border: "none",
             borderRadius: "8px", cursor: "pointer",
-            opacity: sending || !draft.trim() ? 0.6 : 1,
+            opacity:
+              sending ||
+              attachment.kind === "uploading" ||
+              (!draft.trim() && attachment.kind !== "selected" && attachment.kind !== "failed")
+                ? 0.6
+                : 1,
           }}
         >
           Send
