@@ -32,14 +32,27 @@
 // wsBaseUrl() below for the client-side equivalent, keyed off
 // window.location.hostname instead).
 //
-// SECOND CONSUMER (U4, not built here): this module's public surface
-// (connect/enterConversation/leaveConversation/subscribe/disconnect) is
-// kept deliberately small and stable so a later reconnect/resume unit can
-// build on top of it (e.g. wrapping connect() with retry logic) without
-// needing to change its shape — see the issue's own "Out of Scope" note.
-// No resume/reconnect logic is implemented here: a dropped connection
-// simply calls onDisconnect subscribers and stays disconnected until
-// something calls connect() again.
+// RECONNECT/RESUME (issue #22 / U4 / plan KTD6): on an unexpected socket
+// close, this client attempts a bounded number of reconnects with
+// increasing backoff (see RECONNECT_DELAYS_MS below); each successful
+// reconnect automatically sends `{ type: "resume", conversations: [...] }`
+// for whatever conversations a caller has registered interest in via
+// `setLastSeen()`. The server (gatekept/backend/src/services/
+// realtimeResume.ts) replies per-conversation with either replayed
+// `FullMessageEvent`s (each carrying `replayed: true`, still dispatched
+// through the same `onEvent` mechanism as a live delivery so a consumer
+// doesn't need two code paths) or a single `ResumeFallbackEvent` listing
+// conversations whose gap was too large or whose disconnect was too long
+// ago — a consumer that cares about a specific conversation's fallback
+// should check `event.conversationIds.includes(conversationId)` on that
+// event, mirroring how a full message event is filtered by
+// `conversationId` today.
+//
+// An explicit `disconnect()` call does NOT trigger a reconnect attempt —
+// only an unrequested close (network drop, server-side eviction/ban, or
+// the resume itself failing) does. This mirrors browser reconnect
+// conventions (e.g. native EventSource) where a caller-initiated close is
+// never treated as something to recover from.
 import { getToken } from "./auth";
 
 export type FullMessageEvent = {
@@ -47,6 +60,12 @@ export type FullMessageEvent = {
   conversationId: string;
   messageNumber: number;
   senderId: string;
+  // Present (and true) only on a row delivered via resume replay, never on
+  // a live U3 delivery — lets a consumer that cares (e.g. to skip a
+  // "new message" sound/toast for backlog) distinguish the two without a
+  // separate event type, while a consumer that doesn't care can treat both
+  // uniformly (the field is simply absent on a live delivery).
+  replayed?: true;
 };
 
 export type BadgeEvent = {
@@ -57,10 +76,22 @@ export type BadgeEvent = {
   senderId?: string;
 };
 
-export type RealtimeEvent = FullMessageEvent | BadgeEvent;
+export type ResumeFallbackEvent = {
+  type: "resume_fallback";
+  conversationIds: string[];
+};
+
+export type RealtimeEvent = FullMessageEvent | BadgeEvent | ResumeFallbackEvent;
 
 type EventListener = (event: RealtimeEvent) => void;
 type ConnectionListener = () => void;
+
+// KTD6: a handful of bounded retries with increasing delay, not infinite —
+// a genuinely offline client (or a proxy that blocks WS upgrades outright)
+// must eventually stop retrying and leave the decision to fall back to
+// polling to the caller (see the conversation page's own WS+polling
+// wiring), rather than this module retrying forever in the background.
+const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000];
 
 const TICKET_PATH = "/api/gatekept/v1/realtime/ticket";
 const CONNECT_PATH = "/v1/realtime/connect";
@@ -109,7 +140,7 @@ function parseIncoming(raw: string): RealtimeEvent | null {
     const parsed = JSON.parse(raw) as unknown;
     if (typeof parsed !== "object" || parsed === null || !("type" in parsed)) return null;
     const type = (parsed as { type: unknown }).type;
-    if (type === "message" || type === "badge") {
+    if (type === "message" || type === "badge" || type === "resume_fallback") {
       return parsed as RealtimeEvent;
     }
     // Other server message types (`connected`, `enter_conversation_result`)
@@ -134,6 +165,23 @@ export class GatekeptRealtimeClient {
   private disconnectListeners = new Set<ConnectionListener>();
   private connectPromise: Promise<void> | null = null;
 
+  // KTD6: per-conversation last-seen cursor this client has registered
+  // interest in, keyed by conversationId. This wrapper doesn't track
+  // message history itself (callers already know their own last-rendered
+  // messageNumber) — this map exists purely so an automatic post-reconnect
+  // resume() has something to send without the caller needing to re-supply
+  // it after every reconnect. Survives across reconnects (cleared only by
+  // an explicit `disconnect()` call, matching "a caller-requested
+  // disconnect means I'm done with this session" semantics).
+  private lastSeen = new Map<string, number>();
+
+  // Reconnect bookkeeping. `reconnectAttempts` resets to 0 on every
+  // successful (resolved) connect — only a *post-initial* unrequested close
+  // increments it and consults RECONNECT_DELAYS_MS.
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private explicitDisconnect = false;
+
   /**
    * Fetches a ticket and opens the WebSocket connection. Idempotent while
    * already connecting/connected — a second call reuses the in-flight or
@@ -144,6 +192,7 @@ export class GatekeptRealtimeClient {
       return this.connectPromise ?? Promise.resolve();
     }
 
+    this.explicitDisconnect = false;
     this.connectPromise = this.openSocket();
     return this.connectPromise;
   }
@@ -193,14 +242,66 @@ export class GatekeptRealtimeClient {
           settled = true;
           reject(new Error("Realtime connection closed before it was established"));
         }
+        this.scheduleReconnect();
       };
 
       this.socket = ws;
     });
+
+    // Reaching here means the 'connected' ack arrived — a genuine
+    // successful (re)connection, not just a constructed socket. Reset the
+    // backoff counter and, if this was a reconnect (not the very first
+    // connect of this client's lifetime), immediately resume whatever
+    // conversations the caller has registered.
+    const isReconnect = this.reconnectAttempts > 0;
+    this.reconnectAttempts = 0;
+    if (isReconnect && this.lastSeen.size > 0) {
+      this.resume(
+        Array.from(this.lastSeen.entries()).map(([id, lastSeenMessageNumber]) => ({
+          id,
+          lastSeenMessageNumber,
+        }))
+      );
+    }
   }
 
-  /** Closes the connection, if open. Safe to call when already closed. */
+  /**
+   * Schedules a reconnect attempt after an unrequested close, per KTD6's
+   * "a few retries, not infinite" requirement. Never runs after an
+   * explicit disconnect() call, and stops entirely once
+   * RECONNECT_DELAYS_MS is exhausted — a caller (e.g. the conversation
+   * page) is expected to notice `isConnected` staying false and fall back
+   * to polling rather than this module retrying forever in the background.
+   */
+  private scheduleReconnect(): void {
+    if (this.explicitDisconnect) return;
+    if (this.reconnectTimer) return; // Already scheduled — never stack timers.
+
+    const delay = RECONNECT_DELAYS_MS[this.reconnectAttempts];
+    if (delay === undefined) return; // Exhausted all retries — give up quietly.
+
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect().catch(() => {
+        // openSocket()'s own onclose handler already re-scheduled the next
+        // attempt (or gave up, if exhausted) — nothing further to do here.
+      });
+    }, delay);
+  }
+
+  /** Closes the connection, if open. Safe to call when already closed.
+   *  An explicit disconnect() cancels any pending/future reconnect attempt
+   *  and clears registered last-seen cursors — this is a deliberate "I'm
+   *  done with this session" call, not a transient drop to recover from. */
   disconnect(): void {
+    this.explicitDisconnect = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
+    this.lastSeen.clear();
     this.socket?.close();
     this.socket = null;
     this.connectPromise = null;
@@ -215,9 +316,9 @@ export class GatekeptRealtimeClient {
    * matching U1's enter_conversation protocol. A socket that has entered a
    * conversation receives full message payloads for it instead of
    * badge-only events (realtimeDelivery.ts's suppression rule). No-op if
-   * not currently connected — callers are not expected to queue this
-   * across a disconnected period (that's resume/reconnect territory, U4,
-   * explicitly out of scope here).
+   * not currently connected — a reconnect's automatic resume() (see
+   * openSocket above) is what recovers a conversation's state across a
+   * disconnect, not this method being queued.
    */
   enterConversation(conversationId: string): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
@@ -232,9 +333,52 @@ export class GatekeptRealtimeClient {
   }
 
   /**
-   * Subscribes to incoming full-message and badge events. Returns an
-   * unsubscribe function (standard observer-cleanup shape, matching how
-   * the rest of this codebase tears down effects/listeners).
+   * Registers (or updates) this client's current last-seen
+   * `message_number` for a conversation — KTD6's per-connection resume
+   * cursor. Callers (the conversation page) call this whenever they render
+   * a message, live or historical, so that whenever this socket next
+   * reconnects, `resume()` is called automatically with an up-to-date
+   * cursor. Passing `null` removes the registration (e.g. when a caller
+   * navigates away from a conversation and no longer wants it included in
+   * future automatic resumes).
+   */
+  setLastSeen(conversationId: string, messageNumber: number | null): void {
+    if (messageNumber === null) {
+      this.lastSeen.delete(conversationId);
+      return;
+    }
+    this.lastSeen.set(conversationId, messageNumber);
+  }
+
+  /** Returns the currently-registered last-seen cursor for a conversation,
+   *  or `null` if none is registered — mainly a test/observability seam. */
+  getLastSeen(conversationId: string): number | null {
+    return this.lastSeen.get(conversationId) ?? null;
+  }
+
+  /**
+   * Sends `{ type: "resume", conversations: [...] }` — KTD6's reconnect
+   * handshake (gatekept/backend/src/services/realtimeResume.ts is the
+   * server-side handler). Called automatically on a successful reconnect
+   * (see openSocket above) with every registered `setLastSeen()` entry, but
+   * also exposed directly so a caller can trigger a resume for a specific
+   * set of conversations on demand (e.g. right after its own initial
+   * `enterConversation()` on first mount, to catch anything that arrived
+   * between the page's last HTTP fetch and the socket opening). No-op if
+   * not currently connected, matching enterConversation/leaveConversation's
+   * own posture.
+   */
+  resume(conversations: { id: string; lastSeenMessageNumber: number }[]): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    if (conversations.length === 0) return;
+    this.socket.send(JSON.stringify({ type: "resume", conversations }));
+  }
+
+  /**
+   * Subscribes to incoming full-message, badge, and resume_fallback
+   * events. Returns an unsubscribe function (standard observer-cleanup
+   * shape, matching how the rest of this codebase tears down
+   * effects/listeners).
    */
   onEvent(listener: EventListener): () => void {
     this.eventListeners.add(listener);
@@ -243,7 +387,13 @@ export class GatekeptRealtimeClient {
 
   /** Subscribes to disconnect notifications (socket closed, for any
    *  reason — network drop, server-side eviction/ban, or an explicit
-   *  disconnect() call). Returns an unsubscribe function. */
+   *  disconnect() call). Fires on EVERY close, including ones this client
+   *  will automatically try to recover from via scheduleReconnect() — a
+   *  listener that wants to know "should I fall back to polling right
+   *  now" should check `isConnected` after its own short grace period, or
+   *  rely on the conversation page's own reconnect-exhaustion handling,
+   *  rather than treating every onDisconnect firing as terminal. Returns
+   *  an unsubscribe function. */
   onDisconnect(listener: ConnectionListener): () => void {
     this.disconnectListeners.add(listener);
     return () => this.disconnectListeners.delete(listener);
