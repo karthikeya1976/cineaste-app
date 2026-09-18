@@ -168,11 +168,28 @@ export default function NavBar() {
       {/* Links */}
       <nav className="flex flex-col gap-1 px-2 pt-4 flex-1">
         {visible.map(item => {
-          const active = pathname === item.href;
+          // Highlight as active for any route under this item's section
+          // (e.g. /messages/requests, /messages/conversations/:id), not
+          // just an exact match on /messages itself — relevant now that
+          // this same icon can link to a sub-route (see href below), and
+          // more correct in general: the user is still "on Messages" while
+          // reading a request or a conversation.
+          const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+          // The Messages icon's badge means "you have a pending request or
+          // unread message to review" — but the icon's own href always
+          // pointed at /messages (the compose/search page), which has no
+          // link to either /messages/requests or /messages/conversations.
+          // Tapping the badge therefore looked broken: it lit up, but never
+          // led anywhere useful. While the badge is visible, route this
+          // link to the requests inbox instead — the natural landing spot
+          // for "something needs your attention" — falling back to the
+          // normal compose page once there's nothing pending.
+          const href =
+            item.href === "/messages" && navDotVisible ? "/messages/requests" : item.href;
           return (
             <Link
               key={item.href}
-              href={item.href}
+              href={href}
               className="flex items-center gap-3 px-2 py-2.5 rounded-lg transition-colors"
               style={{
                 background: active ? "var(--accent)" : "transparent",

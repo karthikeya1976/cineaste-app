@@ -9,6 +9,7 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { listConversations, resolveUserNames, ensureRegistered, type ConversationSummary } from "@/lib/gatekept-api";
+import { MessagesNavTabs } from "@/components/MessagesNavTabs";
 import { isLoggedIn } from "@/lib/auth";
 import { isConversationUnread, clearUnreadConversation, subscribeUnreadRows } from "@/lib/gatekept-notifications";
 
@@ -75,6 +76,8 @@ export default function ConversationsPage() {
         <h1 style={{ fontSize: "22px", fontWeight: 700, color: "var(--fg)" }}>Conversations</h1>
         <p style={{ fontSize: "13px", color: "var(--fg-muted)", marginTop: "4px" }}>Your accepted message threads</p>
       </div>
+
+      <MessagesNavTabs />
 
       {conversations.length === 0 ? (
         <div style={{ textAlign: "center", paddingTop: "60px", color: "var(--fg-muted)" }}>
