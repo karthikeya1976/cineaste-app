@@ -199,6 +199,16 @@ describe("GatekeptRealtimeClient event dispatch", () => {
     expect(listener).toHaveBeenCalledWith({ type: "badge", reason: "chat_request", chatRequestId: "cr-1", senderId: "u2" });
   });
 
+  it("dispatches a typing event to onEvent subscribers", async () => {
+    const { client, socket } = await connectedClient();
+    const listener = vi.fn();
+    client.onEvent(listener);
+
+    socket.simulateMessage({ type: "typing", conversationId: "c-1", senderId: "u1" });
+
+    expect(listener).toHaveBeenCalledWith({ type: "typing", conversationId: "c-1", senderId: "u1" });
+  });
+
   it("does not dispatch the internal 'connected' ack itself as a RealtimeEvent", async () => {
     const { client, socket } = await connectedClient();
     const listener = vi.fn();
@@ -284,6 +294,28 @@ describe("GatekeptRealtimeClient.enterConversation / leaveConversation", () => {
     const { GatekeptRealtimeClient } = await import("./gatekept-ws");
     const client = new GatekeptRealtimeClient();
     expect(() => client.enterConversation("conv-1")).not.toThrow();
+  });
+});
+
+describe("GatekeptRealtimeClient.sendTyping", () => {
+  it("sends a typing message matching U7's protocol", async () => {
+    mockFetchTicket();
+    const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+    const client = new GatekeptRealtimeClient();
+    const connectPromise = client.connect();
+    const socket = await waitForInstance();
+    socket.simulateConnected();
+    await connectPromise;
+
+    client.sendTyping("conv-42");
+
+    expect(socket.sent).toContain(JSON.stringify({ type: "typing", conversationId: "conv-42" }));
+  });
+
+  it("is a no-op (does not throw) when not connected", async () => {
+    const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+    const client = new GatekeptRealtimeClient();
+    expect(() => client.sendTyping("conv-1")).not.toThrow();
   });
 });
 

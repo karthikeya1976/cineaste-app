@@ -81,7 +81,18 @@ export type ResumeFallbackEvent = {
   conversationIds: string[];
 };
 
-export type RealtimeEvent = FullMessageEvent | BadgeEvent | ResumeFallbackEvent;
+// issue #33 / U7 / plan docs/plans/2026-09-18-001-feat-seamless-chat-
+// experience-plan.md, KTD5: an ephemeral "the other participant is actively
+// typing" push, never persisted server-side and never replayed via resume
+// (KTD5 — a client that reconnects mid-typing simply stops sending the
+// signal and the recipient's indicator times out client-side instead).
+export type TypingEvent = {
+  type: "typing";
+  conversationId: string;
+  senderId: string;
+};
+
+export type RealtimeEvent = FullMessageEvent | BadgeEvent | ResumeFallbackEvent | TypingEvent;
 
 type EventListener = (event: RealtimeEvent) => void;
 type ConnectionListener = () => void;
@@ -140,7 +151,7 @@ function parseIncoming(raw: string): RealtimeEvent | null {
     const parsed = JSON.parse(raw) as unknown;
     if (typeof parsed !== "object" || parsed === null || !("type" in parsed)) return null;
     const type = (parsed as { type: unknown }).type;
-    if (type === "message" || type === "badge" || type === "resume_fallback") {
+    if (type === "message" || type === "badge" || type === "resume_fallback" || type === "typing") {
       return parsed as RealtimeEvent;
     }
     // Other server message types (`connected`, `enter_conversation_result`)
@@ -333,6 +344,21 @@ export class GatekeptRealtimeClient {
   }
 
   /**
+   * Tells the server this client is actively typing in `conversationId` —
+   * matching U7's `typing` protocol (gatekept/backend/src/services/
+   * typingIndicator.ts). Mirrors enterConversation's exact shape: guard on
+   * `readyState === OPEN`, no-op (does not throw) if not currently
+   * connected. Callers are expected to debounce their own calls to this
+   * method (see the conversation page's TYPING_SEND_INTERVAL_MS) — this
+   * wrapper sends unconditionally on every call, it does not itself
+   * throttle.
+   */
+  sendTyping(conversationId: string): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify({ type: "typing", conversationId }));
+  }
+
+  /**
    * Registers (or updates) this client's current last-seen
    * `message_number` for a conversation — KTD6's per-connection resume
    * cursor. Callers (the conversation page) call this whenever they render
@@ -375,10 +401,10 @@ export class GatekeptRealtimeClient {
   }
 
   /**
-   * Subscribes to incoming full-message, badge, and resume_fallback
-   * events. Returns an unsubscribe function (standard observer-cleanup
-   * shape, matching how the rest of this codebase tears down
-   * effects/listeners).
+   * Subscribes to incoming full-message, badge, resume_fallback, and
+   * typing events. Returns an unsubscribe function (standard
+   * observer-cleanup shape, matching how the rest of this codebase tears
+   * down effects/listeners).
    */
   onEvent(listener: EventListener): () => void {
     this.eventListeners.add(listener);
