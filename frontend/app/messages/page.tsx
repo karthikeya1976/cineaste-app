@@ -22,6 +22,7 @@ import {
 } from "@/lib/gatekept-api";
 import { placeholderEncrypt } from "@/lib/gatekept-crypto";
 import { CryptoNotice } from "@/components/CryptoNotice";
+import { MessagesNavTabs } from "@/components/MessagesNavTabs";
 import { getUser, isLoggedIn } from "@/lib/auth";
 
 type Step = "idle" | "found" | "sent";
@@ -181,12 +182,14 @@ function MessagesSearchPageInner() {
 
   return (
     <div style={{ maxWidth: "600px", margin: "0 auto" }}>
-      <div style={{ marginBottom: "24px" }}>
+      <div style={{ marginBottom: "20px" }}>
         <h1 style={{ fontSize: "22px", fontWeight: 700, color: "var(--fg)" }}>Messages</h1>
         <p style={{ fontSize: "13px", color: "var(--fg-muted)", marginTop: "4px" }}>
           You can send one message. They decide whether to open a conversation.
         </p>
       </div>
+
+      <MessagesNavTabs />
 
       {step === "idle" && (
         <>

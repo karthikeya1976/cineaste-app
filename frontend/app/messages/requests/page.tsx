@@ -23,6 +23,7 @@ import {
 } from "@/lib/gatekept-api";
 import { placeholderDecrypt } from "@/lib/gatekept-crypto";
 import { CryptoNotice } from "@/components/CryptoNotice";
+import { MessagesNavTabs } from "@/components/MessagesNavTabs";
 import { isLoggedIn } from "@/lib/auth";
 import { isChatRequestUnread, clearUnreadChatRequest, subscribeUnreadRows } from "@/lib/gatekept-notifications";
 
@@ -167,6 +168,8 @@ export default function RequestsPage() {
           People who&apos;ve sent you a first message. Accepting opens a two-way conversation.
         </p>
       </div>
+
+      <MessagesNavTabs />
 
       <div style={{ marginBottom: "20px" }}>
         <CryptoNotice />
