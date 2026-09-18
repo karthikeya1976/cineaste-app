@@ -44,6 +44,7 @@ import {
 } from "@/components/AttachmentPicker";
 import { AttachmentMessage } from "@/components/AttachmentMessage";
 import { Avatar } from "@/components/Avatar";
+import { TypingIndicator } from "@/components/TypingIndicator";
 import { uploadAttachment, isPresignExpired } from "@/lib/gatekept-attachments";
 import { isLastInSenderRun } from "@/lib/messageRuns";
 import { getUser, isLoggedIn } from "@/lib/auth";
@@ -59,6 +60,17 @@ const THREAD_AVATAR_SIZE = 32;
 const THREAD_AVATAR_GAP = "8px";
 
 const POLL_INTERVAL_MS = 3000;
+
+// issue #33 / U7 / plan docs/plans/2026-09-18-001-feat-seamless-chat-
+// experience-plan.md, KTD5's own "named constants, not an approximate
+// ~3s" requirement. TYPING_SEND_INTERVAL_MS: this client sends at most one
+// sendTyping() call per this interval while the user is actively typing.
+// TYPING_CLEAR_TIMEOUT_MS: the recipient auto-clears a received indicator
+// after this much silence — deliberately longer than the send interval by
+// a safe margin so the indicator cannot flicker off between two resends
+// during a continuous typing burst.
+const TYPING_SEND_INTERVAL_MS = 2000;
+const TYPING_CLEAR_TIMEOUT_MS = 3500;
 
 const btnSecondary: React.CSSProperties = {
   padding: "6px 12px", fontSize: "12px", fontWeight: 500,
@@ -94,6 +106,21 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
   const lastPresign = useRef<{ result: PresignAttachmentResponse; issuedAtMs: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nextMessageNumber = useRef(0);
+  // issue #33 / U7: whether the other participant's typing indicator is
+  // currently shown. State (not a ref), unlike this file's other
+  // WS-bookkeeping fields, because it drives a render (whether
+  // <TypingIndicator> is mounted at all) rather than being write-once
+  // internal bookkeeping.
+  const [otherIsTyping, setOtherIsTyping] = useState(false);
+  // Last time (Date.now()) THIS client sent its own `typing` signal — a
+  // simple "last sent at" check, not a full debounce library, per this
+  // unit's own Approach ("don't over-engineer a full debounce library").
+  const lastTypingSentAt = useRef(0);
+  // Pending auto-clear timer for a RECEIVED typing indicator — reset on
+  // every new `typing` event, fires after TYPING_CLEAR_TIMEOUT_MS of
+  // silence, and is explicitly cleared (not just left to fire later) on
+  // unmount/navigating away per this unit's own requirement.
+  const typingClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const me = getUser();
 
@@ -168,6 +195,21 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
         // current poll interval.
         void load();
       }
+      if (event.type === "typing" && event.conversationId === conversationId) {
+        // issue #33 / U7: record that the other participant just signaled
+        // typing, show the indicator, and (re)start the auto-clear timer —
+        // any previous pending timer is cleared first so a fresh signal
+        // resets the clock rather than letting an earlier timer fire out
+        // from under a still-typing sender.
+        if (typingClearTimer.current) {
+          clearTimeout(typingClearTimer.current);
+        }
+        setOtherIsTyping(true);
+        typingClearTimer.current = setTimeout(() => {
+          setOtherIsTyping(false);
+          typingClearTimer.current = null;
+        }, TYPING_CLEAR_TIMEOUT_MS);
+      }
     },
     [conversationId, load]
   );
@@ -238,6 +280,16 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
       client.leaveConversation();
       client.setLastSeen(conversationId, null);
       // Deliberately does NOT call client.disconnect() — see comment above.
+
+      // issue #33 / U7: clear any locally-shown typing indicator and its
+      // pending auto-clear timer IMMEDIATELY on unmount/navigating away —
+      // not waiting for TYPING_CLEAR_TIMEOUT_MS to elapse on its own, per
+      // this unit's own requirement.
+      if (typingClearTimer.current) {
+        clearTimeout(typingClearTimer.current);
+        typingClearTimer.current = null;
+      }
+      setOtherIsTyping(false);
     };
   }, [conversationId, handleRealtimeEvent]);
 
@@ -486,6 +538,16 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
         </div>
       )}
 
+      {/* issue #33 / U7: rendered as its own row BETWEEN the scrollable
+          message list above and the compose input form below — outside the
+          scrollRef-managed scroll container, so it never triggers that
+          container's auto-scroll effect (which fires only on `messages`
+          changes) and never causes layout shift inside the message list
+          itself. Renders nothing when there's nothing to announce (see
+          TypingIndicator's own doc comment), so this row reserves no
+          visual space while idle. */}
+      {otherIsTyping && <TypingIndicator name={otherName ?? "They"} />}
+
       <form onSubmit={handleSend} style={{ marginTop: "12px", display: "flex", gap: "8px" }}>
         {attachment.kind === "idle" && (
           <AttachmentPicker
@@ -499,7 +561,18 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
         )}
         <input
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            // issue #33 / U7: send at most one sendTyping() call per
+            // TYPING_SEND_INTERVAL_MS while the user is actively typing — a
+            // simple "last sent at" ref check, not a full debounce library
+            // (per this unit's own Approach).
+            const now = Date.now();
+            if (now - lastTypingSentAt.current >= TYPING_SEND_INTERVAL_MS) {
+              lastTypingSentAt.current = now;
+              getRealtimeClient().sendTyping(conversationId);
+            }
+          }}
           placeholder="Type a message…"
           style={{
             flex: 1, background: "var(--surface)", border: "1px solid var(--border)",
