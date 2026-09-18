@@ -9,13 +9,12 @@
 // screen-reader user gets the same "they're typing" cue a sighted user
 // sees appear and disappear automatically.
 //
-// LAYOUT: this component renders nothing (`null`) when there is nothing to
-// announce, rather than an empty container, so it never reserves visual
-// space in the layout on its own — the caller (the conversation page)
-// controls exactly when this component is mounted/rendered, per that
-// page's own placement rule (a fixed row BETWEEN the scrollable message
-// list and the compose input form, outside the scrollRef-managed scroll
-// container).
+// LAYOUT: this component is purely presentational and always renders its
+// row once mounted — it never reserves visual space on its own because the
+// CALLER (the conversation page) controls whether it's mounted at all
+// (`{otherIsTyping && <TypingIndicator ... />}`), per that page's own
+// placement rule (a fixed row BETWEEN the scrollable message list and the
+// compose input form, outside the scrollRef-managed scroll container).
 export interface TypingIndicatorProps {
   name: string;
 }
