@@ -17,9 +17,11 @@
 // STYLING: card matching the existing var(--surface)/var(--border)/12-14px
 // radius pattern already used throughout messages/*.tsx (not a
 // shadow-heavy floating notification, per the plan's explicit steer away
-// from that) — avatar-initial circle using the exact
-// u.name.charAt(0).toUpperCase() pattern messages/page.tsx already
-// establishes for search results.
+// from that) — avatar rendered via the shared <Avatar> component (issue
+// #17 / U8), which extracts the exact u.name.charAt(0).toUpperCase()
+// circle pattern messages/page.tsx originally established for search
+// results; this file's own copy of that pattern was the first migration
+// target per KTD7.
 //
 // BEHAVIOR: auto-dismisses after 5 seconds or on click; click navigates to
 // the relevant conversation or requests inbox. Multiple simultaneous
@@ -29,6 +31,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { resolveUserNames } from "@/lib/gatekept-api";
 import { subscribeNotifications, type NotificationEvent } from "@/lib/gatekept-notifications";
+import { Avatar } from "@/components/Avatar";
 
 const AUTO_DISMISS_MS = 5000;
 
@@ -162,23 +165,7 @@ export default function MessageToast() {
             color: "var(--fg)",
           }}
         >
-          <div
-            style={{
-              width: "36px",
-              height: "36px",
-              borderRadius: "50%",
-              flexShrink: 0,
-              background: "var(--accent)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: "15px",
-              fontWeight: 700,
-              color: "#fff",
-            }}
-          >
-            {toast.name.charAt(0).toUpperCase()}
-          </div>
+          <Avatar name={toast.name} size={36} />
           <p style={{ fontSize: "13px", fontWeight: 500, color: "var(--fg)", margin: 0 }}>
             {copyFor(toast.reason, toast.name)}
           </p>

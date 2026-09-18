@@ -10,6 +10,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { listConversations, resolveUserNames, ensureRegistered, type ConversationSummary } from "@/lib/gatekept-api";
 import { MessagesNavTabs } from "@/components/MessagesNavTabs";
+import { Avatar } from "@/components/Avatar";
 import { isLoggedIn } from "@/lib/auth";
 import { isConversationUnread, clearUnreadConversation, subscribeUnreadRows } from "@/lib/gatekept-notifications";
 
@@ -106,11 +107,14 @@ export default function ConversationsPage() {
                 gap: "14px", textDecoration: "none",
               }}
             >
-              <span style={{ fontSize: "14px", fontWeight: unread ? 700 : 600, color: "var(--fg)", display: "flex", alignItems: "center", gap: "6px" }}>
-                {unread && (
-                  <span aria-label="Unread" style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--accent)", flexShrink: 0 }} />
-                )}
-                {nameFor(names, c.otherParticipantId)}
+              <span style={{ display: "flex", alignItems: "center", gap: "14px", minWidth: 0 }}>
+                <Avatar name={nameFor(names, c.otherParticipantId)} size={44} />
+                <span style={{ fontSize: "14px", fontWeight: unread ? 700 : 600, color: "var(--fg)", display: "flex", alignItems: "center", gap: "6px" }}>
+                  {unread && (
+                    <span aria-label="Unread" style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--accent)", flexShrink: 0 }} />
+                  )}
+                  {nameFor(names, c.otherParticipantId)}
+                </span>
               </span>
               <span style={{
                 fontSize: "12px", fontWeight: 600,

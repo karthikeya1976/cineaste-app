@@ -43,8 +43,20 @@ import {
   type PendingAttachment,
 } from "@/components/AttachmentPicker";
 import { AttachmentMessage } from "@/components/AttachmentMessage";
+import { Avatar } from "@/components/Avatar";
 import { uploadAttachment, isPresignExpired } from "@/lib/gatekept-attachments";
+import { isLastInSenderRun } from "@/lib/messageRuns";
 import { getUser, isLoggedIn } from "@/lib/auth";
+
+// Avatar sizing/gap for the message-thread placement (issue #17 / U8):
+// rendered next to the other participant's messages only, once per
+// consecutive same-sender run, bottom-aligned with the run's last bubble.
+// 32px matches the smallest existing inline avatar precedent already in
+// this codebase (feed/page.tsx's comment-row avatars) — appropriate here
+// since a thread bubble avatar sits inline next to dense message rows, not
+// a list row like the 44px conversation-list avatar above it.
+const THREAD_AVATAR_SIZE = 32;
+const THREAD_AVATAR_GAP = "8px";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -410,7 +422,7 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
             No messages yet — say hello.
           </p>
         ) : (
-          messages.map((m) => {
+          messages.map((m, i) => {
             const mine = m.senderId === me?.id;
             // A single-space placeholder is sent for attachment-only
             // messages (see handleSend) so the placeholder-crypto layer
@@ -418,8 +430,25 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
             // text alongside the attachment.
             const text = placeholderDecrypt(m.ciphertext);
             const showText = text.trim().length > 0;
+            // Avatar placement (issue #17 / U8): only for the other
+            // participant's messages, only once per consecutive
+            // same-sender run, aligned to the LAST bubble in that run —
+            // never once per message. isLastInSenderRun compares this
+            // message's senderId to the next message's senderId (or
+            // absence of a next message) to find the run boundary. Every
+            // other-participant message that is NOT last-in-run still
+            // reserves the avatar's width as a blank spacer (same size,
+            // transparent) so bubble left edges stay aligned within the
+            // run, rather than the avatar column collapsing and shifting
+            // earlier-in-run bubbles left.
+            const showAvatar = !mine && isLastInSenderRun(messages, i);
             return (
               <div key={m.id} style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start" }}>
+                {!mine && (
+                  <div style={{ width: `${THREAD_AVATAR_SIZE}px`, flexShrink: 0, marginRight: THREAD_AVATAR_GAP, alignSelf: "flex-end" }}>
+                    {showAvatar && <Avatar name={otherName ?? "?"} size={THREAD_AVATAR_SIZE} />}
+                  </div>
+                )}
                 <div style={{
                   maxWidth: "75%", borderRadius: "10px", padding: "8px 12px", fontSize: "14px",
                   background: mine ? "var(--accent)" : "var(--bg)",
