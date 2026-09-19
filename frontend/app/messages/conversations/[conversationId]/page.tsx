@@ -20,7 +20,7 @@
 // polling loop is what keeps the thread correct — it was never turned off
 // to begin with, so there is no separate "switch to polling" code path to
 // get wrong.
-import { use, useEffect, useState, useCallback, useRef } from "react";
+import { use, useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   getMessages,
@@ -46,9 +46,14 @@ import { AttachmentMessage } from "@/components/AttachmentMessage";
 import { Avatar } from "@/components/Avatar";
 import { TypingIndicator } from "@/components/TypingIndicator";
 import { MessageStatusTicks } from "@/components/MessageStatusTicks";
+import { DaySeparator } from "@/components/DaySeparator";
+import { MessageActionMenu, type MessageAction } from "@/components/MessageActionMenu";
 import { uploadAttachment, isPresignExpired } from "@/lib/gatekept-attachments";
 import { isLastInSenderRun } from "@/lib/messageRuns";
 import { deriveMessageStatus } from "@/lib/messageStatus";
+import { groupMessagesByDay } from "@/lib/messageDayGroups";
+import { buildSupersessionMap, resolveMessage, resolveReplyTarget } from "@/lib/messageSupersession";
+import { copyToClipboard } from "@/lib/clipboard";
 import { getUser, isLoggedIn } from "@/lib/auth";
 
 // Avatar sizing/gap for the message-thread placement (issue #17 / U8):
@@ -73,6 +78,28 @@ const POLL_INTERVAL_MS = 3000;
 // during a continuous typing burst.
 const TYPING_SEND_INTERVAL_MS = 2000;
 const TYPING_CLEAR_TIMEOUT_MS = 3500;
+
+// R4 / U6 (messenger channel fixes plan): the action set shown per message
+// direction — never the wrong set for either. Received messages never show
+// Edit (a user can't edit someone else's message); sent messages never show
+// Report (reporting your own message is meaningless — the existing
+// conversation-level "Report & block" affordance above already covers
+// reporting the OTHER participant).
+const RECEIVED_MESSAGE_ACTIONS: MessageAction[] = ["copy", "reply", "report"];
+const SENT_MESSAGE_ACTIONS: MessageAction[] = ["edit", "reply", "copy"];
+
+// R3 / U5 (messenger channel fixes plan): formats a message's `sentAt` as a
+// local clock time (e.g. "3:42 PM") for display under each bubble, adjacent
+// to MessageStatusTicks. Uses the viewer's local timezone (toLocaleTimeString
+// with no explicit timeZone) to match groupMessagesByDay's own local-day
+// boundary rule — both derive "what day/time is this, to this viewer" the
+// same way rather than one using local and the other UTC.
+function formatMessageTime(sentAt: string): string {
+  return new Date(sentAt).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 const btnSecondary: React.CSSProperties = {
   padding: "6px 12px", fontSize: "12px", fontWeight: 500,
@@ -132,6 +159,29 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
   // still-visible message from the other participant instead of exactly
   // once per message.
   const ackedMessageNumbers = useRef(new Set<number>());
+
+  // R5 / U6: the message currently being replied to, or null. Setting this
+  // shows the quoted-preview strip above the composer input; sending while
+  // set passes replyToMessageId through to sendMessage; it's cleared after
+  // a successful send or when the user dismisses the preview.
+  const [replyingTo, setReplyingTo] = useState<MessageSummary | null>(null);
+
+  // R6 / U6: the ORIGINAL sent message currently being edited, or null.
+  // Non-null puts the composer in an explicit "editing message X" mode (a
+  // labeled banner + Cancel, per the plan) — the composer itself is reused
+  // rather than an inline-editable bubble (the existing bubble layout
+  // wasn't designed to host input + save/cancel controls). `draftBeforeEdit`
+  // preserves whatever unsent text was already in the composer when Edit
+  // was clicked, so Cancel restores it rather than silently discarding it.
+  const [editingMessage, setEditingMessage] = useState<MessageSummary | null>(null);
+  const draftBeforeEdit = useRef<string>("");
+
+  // Per-message "Copied" confirmation — a message id transiently set after
+  // a successful Copy, cleared after a short delay. Purely cosmetic
+  // feedback; copyToClipboard() itself already returns a boolean so this
+  // state is optional UI polish, not load-bearing for the Copy action.
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const me = getUser();
 
@@ -353,6 +403,24 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
 
+  // KTD5 / U6: resolves, for every original message that has been edited,
+  // which superseding row is currently authoritative (latest sentAt wins,
+  // ties broken by higher id — see lib/messageSupersession.ts). Rebuilt
+  // whenever `messages` changes; the render loop below looks up each
+  // message's resolved content through this map, and quoted reply previews
+  // (KTD6) resolve THROUGH this same map rather than pinning to reply-time
+  // wording.
+  const supersessionMap = useMemo(() => buildSupersessionMap(messages), [messages]);
+
+  // Clears the transient "Copied" confirmation's pending timer on unmount —
+  // purely cosmetic state, but left running past unmount would attempt a
+  // setState on an unmounted component.
+  useEffect(() => {
+    return () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    };
+  }, []);
+
   // issue #26 / U6, state (1) selected-unsent: purely local, sets state
   // and generates a local blob: preview URL — no network call of any kind.
   function handleAttachmentSelect(pending: PendingAttachment) {
@@ -451,6 +519,15 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
         ciphertextType: encrypted.type,
         messageNumber: nextMessageNumber.current++,
         attachmentRef,
+        // R5 / U6: threads the reply reference through when replying.
+        replyToMessageId: replyingTo ? replyingTo.id : undefined,
+        // R6 / U6: threads the ORIGINAL message's id through when editing.
+        // editingMessage.id is guaranteed to be the true original's id, not
+        // a prior edit's — handleEditMessage below always constructs
+        // editingMessage with originalId as its id, specifically so this
+        // line can never accidentally supersede an intermediate edit
+        // (KTD5's "always target original" convention).
+        supersedesMessageId: editingMessage ? editingMessage.id : undefined,
       });
       setDraft("");
       if (attachment.kind !== "idle" && attachment.kind !== "rejected") {
@@ -460,11 +537,108 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
       }
       lastPresign.current = null;
       setAttachment({ kind: "idle" });
+      // Exit reply/edit mode only on a SUCCESSFUL send — on failure (catch
+      // below) both stay set so the user doesn't lose the in-progress
+      // reply/edit context along with the error.
+      setReplyingTo(null);
+      setEditingMessage(null);
+      draftBeforeEdit.current = "";
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not send that message.");
     } finally {
       setSending(false);
+    }
+  }
+
+  // R5 / U6: Reply action — sets composer state; the quoted-preview strip
+  // above the input (rendered near the form below) reflects this. Does not
+  // touch the existing draft text, matching Signal-style reply UX where the
+  // user still types their own new message after quoting.
+  function handleReplyToMessage(message: MessageSummary) {
+    setEditingMessage(null);
+    setReplyingTo(message);
+  }
+
+  function handleCancelReply() {
+    setReplyingTo(null);
+  }
+
+  // R6 / U6: Edit action (sent messages only) — opens the composer in
+  // "editing message X" mode, pre-filled with the CURRENT plaintext (which,
+  // for a message that's already been edited once, is the latest edit's
+  // content, not the true original's — editing shows/starts from what's
+  // actually on screen). `originalId` is always the TRUE original message's
+  // id, per KTD5's "supersedesMessageId always targets the original, never
+  // the immediately-prior edit" convention — callers (the render loop) pass
+  // this separately from `message` precisely because `message` there is
+  // already resolved through supersession and may itself be a prior edit,
+  // whose own id must never be what a NEW edit supersedes.
+  //
+  // Per the plan: any in-progress unsent draft text is preserved, not
+  // discarded — stashed in draftBeforeEdit so Cancel can restore it.
+  function handleEditMessage(message: MessageSummary, originalId: string) {
+    setReplyingTo(null);
+    draftBeforeEdit.current = draft;
+    // editingMessage stores the id sendMessage's supersedesMessageId must
+    // target (the original), while the composer is pre-filled from the
+    // resolved message's own current content.
+    setEditingMessage({ ...message, id: originalId });
+    setDraft(placeholderDecrypt(message.ciphertext));
+  }
+
+  function handleCancelEdit() {
+    setEditingMessage(null);
+    setDraft(draftBeforeEdit.current);
+    draftBeforeEdit.current = "";
+  }
+
+  // R4 / U6: Copy action — copies the DECRYPTED plaintext (exactly what's
+  // visually rendered), never the ciphertext. Shows a brief transient
+  // "Copied" confirmation next to the trigger.
+  async function handleCopyMessage(message: MessageSummary) {
+    const text = placeholderDecrypt(message.ciphertext);
+    const ok = await copyToClipboard(text);
+    if (!ok) return;
+    setCopiedMessageId(message.id);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopiedMessageId(null), 1500);
+  }
+
+  // R7 / U6: per-message Report — calls fileReport with evidence.messageIds
+  // set to just this message's id. Deliberately does NOT call blockUser:
+  // the existing report affordances in this file (handleReport below) and
+  // in requests/page.tsx both unconditionally block as a side effect, but
+  // per-message Report is explicitly decoupled from that pattern (reporting
+  // one message shouldn't end an otherwise-fine conversation) — see this
+  // unit's own Approach section. Confirmation copy at the call site (the
+  // inline confirm below) reads "Report this message", not "Report &
+  // block", so the user isn't led to expect the same consequence.
+  async function handleReportMessage(message: MessageSummary) {
+    if (!window.confirm("Report this message? This sends the message to moderators for review.")) {
+      return;
+    }
+    try {
+      await fileReport({
+        reportedUserId: message.senderId,
+        category: "harassment",
+        conversationId,
+        evidence: { messageIds: [message.id] },
+      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not file that report.");
+    }
+  }
+
+  function handleMessageAction(action: MessageAction, message: MessageSummary, originalId: string) {
+    if (action === "copy") {
+      void handleCopyMessage(message);
+    } else if (action === "reply") {
+      handleReplyToMessage(message);
+    } else if (action === "report") {
+      void handleReportMessage(message);
+    } else if (action === "edit") {
+      handleEditMessage(message, originalId);
     }
   }
 
@@ -530,8 +704,34 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
             No messages yet — say hello.
           </p>
         ) : (
-          messages.map((m, i) => {
-            const mine = m.senderId === me?.id;
+          // R3 / U5: the flat, chronologically-ordered `messages` array is
+          // interleaved with day-separator entries by groupMessagesByDay
+          // (lib/messageDayGroups.ts) before rendering, replacing the
+          // former plain `messages.map(...)`. isLastInSenderRun still
+          // compares against the ORIGINAL flat `messages` array (a run can
+          // legitimately span a day boundary — e.g. the same sender's last
+          // message before midnight and first message after it are still
+          // one run for avatar-placement purposes), so each "message" entry
+          // below looks up its own index (`i`, via messages.indexOf) in the
+          // original `messages` array rather than any index local to the
+          // day-grouped array.
+          groupMessagesByDay(messages).map((entry) => {
+            if (entry.type === "separator") {
+              return <DaySeparator key={`separator-${entry.date.toISOString()}`} date={entry.date} />;
+            }
+
+            const original = entry.message;
+            const i = messages.indexOf(original);
+            // KTD5 / U6: resolve to whatever currently supersedes this
+            // original (or itself, if never edited) — the thread renders
+            // the LATEST content at the ORIGINAL's timeline position. `mine`
+            // and avatar/run placement are still derived from the ORIGINAL
+            // row (sender never changes between an original and its edits),
+            // but displayed text/attachment/reply-reference/edited-marker
+            // all come from `m`, the resolved row.
+            const m = resolveMessage(original, supersessionMap);
+            const wasEdited = m.id !== original.id;
+            const mine = original.senderId === me?.id;
             // A single-space placeholder is sent for attachment-only
             // messages (see handleSend) so the placeholder-crypto layer
             // always has a non-empty payload — never rendered as visible
@@ -550,12 +750,42 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
             // run, rather than the avatar column collapsing and shifting
             // earlier-in-run bubbles left.
             const showAvatar = !mine && isLastInSenderRun(messages, i);
+
+            // KTD6 / U6: a reply's quoted preview resolves THROUGH
+            // supersession — shows the referenced message's CURRENT
+            // content, not its wording at reply-time (deliberate, see the
+            // plan's KTD6). Falls back to a muted "unavailable" state if
+            // the referenced message isn't in the currently-loaded history
+            // window, rather than erroring.
+            const replyTarget = m.replyToMessageId
+              ? resolveReplyTarget(m.replyToMessageId, messages, supersessionMap)
+              : null;
+            const showReplyUnavailable = Boolean(m.replyToMessageId) && !replyTarget;
+
+            const menuActions = mine ? SENT_MESSAGE_ACTIONS : RECEIVED_MESSAGE_ACTIONS;
+
             return (
-              <div key={m.id} style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
-                <div style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start", width: "100%" }}>
+              <div key={original.id} style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
+                <div style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start", width: "100%", gap: "4px" }}>
                   {!mine && (
                     <div style={{ width: `${THREAD_AVATAR_SIZE}px`, flexShrink: 0, marginRight: THREAD_AVATAR_GAP, alignSelf: "flex-end" }}>
                       {showAvatar && <Avatar name={otherName ?? "?"} size={THREAD_AVATAR_SIZE} />}
+                    </div>
+                  )}
+                  {/* R4 / U6: the action-menu trigger is ALWAYS rendered
+                      (never hover-gated) on every real message bubble — see
+                      MessageActionMenu.tsx's own header comment for why.
+                      Placed before the bubble for a "theirs" message and
+                      after it for a "mine" message so it always sits on the
+                      OUTER edge of the row, never squeezed against the
+                      avatar/thread wall. */}
+                  {!mine && (
+                    <div style={{ alignSelf: "flex-end" }}>
+                      <MessageActionMenu
+                        actions={menuActions}
+                        onAction={(action) => handleMessageAction(action, m, original.id)}
+                        triggerLabel={`Actions for message from ${otherName ?? "them"}`}
+                      />
                     </div>
                   )}
                   <div style={{
@@ -565,11 +795,38 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
                     border: mine ? "none" : "1px solid var(--border)",
                     display: "flex", flexDirection: "column", gap: "6px",
                   }}>
+                    {/* KTD6 / U6: quoted reply-reference preview, rendered
+                        above this bubble's own content when this message is
+                        a reply. */}
+                    {m.replyToMessageId && (
+                      <div
+                        style={{
+                          borderLeft: `2px solid ${mine ? "rgba(255,255,255,0.5)" : "var(--accent)"}`,
+                          paddingLeft: "8px",
+                          fontSize: "12px",
+                          opacity: 0.85,
+                          fontStyle: showReplyUnavailable ? "italic" : "normal",
+                        }}
+                      >
+                        {showReplyUnavailable
+                          ? "Original message unavailable"
+                          : placeholderDecrypt(replyTarget!.ciphertext)}
+                      </div>
+                    )}
                     {m.attachmentRef && (
                       <AttachmentMessage conversationId={conversationId} attachmentRef={m.attachmentRef} />
                     )}
                     {showText && <span>{text}</span>}
                   </div>
+                  {mine && (
+                    <div style={{ alignSelf: "flex-end" }}>
+                      <MessageActionMenu
+                        actions={menuActions}
+                        onAction={(action) => handleMessageAction(action, m, original.id)}
+                        triggerLabel="Actions for your message"
+                      />
+                    </div>
+                  )}
                 </div>
                 {/* issue #22 / U5: sent/delivered/read ticks, rendered ONLY
                     for the current user's own messages — a recipient never
@@ -582,12 +839,30 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
                     it — a real contrast bug, not a styling preference, so
                     the tick sits just outside the bubble instead, where
                     var(--fg-muted)/var(--accent) are both legible against
-                    the thread's own background. */}
-                {mine && (
-                  <div style={{ marginTop: "2px", paddingRight: "2px" }}>
-                    <MessageStatusTicks state={deriveMessageStatus(m)} />
-                  </div>
-                )}
+                    the thread's own background.
+
+                    R3 / U5: the local send-time string sits in the SAME row
+                    as the ticks (not stacked above/below), timestamp first
+                    then ticks, so the two never visually collide — for a
+                    "theirs" bubble (no ticks rendered at all) the row still
+                    renders with just the timestamp, left-aligned under that
+                    bubble.
+
+                    R6 / U6: a small "edited" label sits INLINE in this same
+                    row, AFTER the timestamp (per the plan's explicit
+                    placement), whenever the resolved content differs from
+                    the original row (i.e. this message has been
+                    superseded). */}
+                <div style={{ marginTop: "2px", paddingRight: mine ? "2px" : 0, display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>{formatMessageTime(m.sentAt)}</span>
+                  {wasEdited && (
+                    <span style={{ fontSize: "11px", color: "var(--fg-muted)", fontStyle: "italic" }}>edited</span>
+                  )}
+                  {copiedMessageId === m.id && (
+                    <span style={{ fontSize: "11px", color: "var(--accent)" }}>Copied</span>
+                  )}
+                  {mine && <MessageStatusTicks state={deriveMessageStatus(m)} />}
+                </div>
               </div>
             );
           })
@@ -622,6 +897,64 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
           TypingIndicator's own doc comment), so this row reserves no
           visual space while idle. */}
       {otherIsTyping && <TypingIndicator name={otherName ?? "They"} />}
+
+      {/* R5 / U6: quoted-preview strip above the composer input, shown
+          while replyingTo is set. Dismissible via its own close button,
+          independent of Cancel (which only applies to edit mode below). */}
+      {replyingTo && (
+        <div
+          style={{
+            marginTop: "12px", display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: "8px", background: "var(--surface)", border: "1px solid var(--border)",
+            borderLeft: "3px solid var(--accent)", borderRadius: "8px", padding: "8px 12px", fontSize: "12px",
+          }}
+        >
+          <div style={{ overflow: "hidden" }}>
+            <div style={{ color: "var(--fg-muted)", fontWeight: 600, marginBottom: "2px" }}>
+              Replying to {replyingTo.senderId === me?.id ? "yourself" : otherName ?? "them"}
+            </div>
+            <div style={{ color: "var(--fg)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {placeholderDecrypt(replyingTo.ciphertext)}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleCancelReply}
+            aria-label="Cancel reply"
+            style={{ background: "none", border: "none", color: "var(--fg-muted)", cursor: "pointer", fontSize: "16px", flexShrink: 0 }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* R6 / U6: explicit "editing message X" banner, shown while
+          editingMessage is set — the composer's own input (below) is
+          reused as the edit field rather than an inline-editable bubble
+          (per the plan's Approach). Cancel restores whatever draft text was
+          in the composer before Edit was clicked (draftBeforeEdit), rather
+          than leaving it discarded. */}
+      {editingMessage && (
+        <div
+          style={{
+            marginTop: "12px", display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: "8px", background: "var(--surface)", border: "1px solid var(--border)",
+            borderLeft: "3px solid var(--accent)", borderRadius: "8px", padding: "8px 12px", fontSize: "12px",
+          }}
+        >
+          <span style={{ color: "var(--fg-muted)", fontWeight: 600 }}>Editing message</span>
+          <button
+            type="button"
+            onClick={handleCancelEdit}
+            style={{
+              background: "none", border: "1px solid var(--border)", color: "var(--fg-muted)",
+              cursor: "pointer", fontSize: "12px", borderRadius: "6px", padding: "4px 10px",
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       <form onSubmit={handleSend} style={{ marginTop: "12px", display: "flex", gap: "8px" }}>
         {attachment.kind === "idle" && (
@@ -674,7 +1007,7 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
                 : 1,
           }}
         >
-          Send
+          {editingMessage ? "Save" : "Send"}
         </button>
       </form>
     </div>
