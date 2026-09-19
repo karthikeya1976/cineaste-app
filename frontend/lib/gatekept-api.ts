@@ -102,6 +102,14 @@ export interface ChatRequestSummary {
   senderRegistrationId: number;
   senderDeviceId: number;
   createdAt: string;
+  // Additive — U7 (messenger channel fixes plan, R9/KTD9). The backend's
+  // first-contact scanner verdict for this request's plaintext, now
+  // persisted and surfaced instead of the previous silent-drop-on-abusive
+  // behavior. `null` covers rows from before this field existed or any
+  // scanner path that didn't produce a verdict — treated as NOT safe to
+  // display by requests/page.tsx's fail-closed rendering rule (see
+  // lib/offensiveContent.ts), same as an unrecognized string would be.
+  scanVerdict?: "clean" | "abusive" | "uncertain" | null;
 }
 
 export function sendChatRequest(payload: {
@@ -167,6 +175,20 @@ export interface MessageSummary {
   // rule this drives.
   deliveredAt: string | null;
   readAt: string | null;
+  // R5/R6 / U6 (messenger channel fixes plan): sourced from the backend's
+  // now-extended GET /v1/conversations/:id/messages response (U1/U2,
+  // gatekept repo — already committed on the backend's
+  // feat/messenger-channel-fixes-backend branch). Both nullable,
+  // self-referencing by message id, resolved server-side so the frontend
+  // never needs a second round-trip per message. `replyToMessageId` points
+  // at the message this one quotes (KTD6); `supersedesMessageId` points at
+  // the ORIGINAL message this one replaces the display of, always the
+  // original even for an edit-of-edit, never the immediately-prior edit
+  // (KTD5's "target original" convention) — see lib/messageSupersession.ts
+  // for the client-side resolution/tie-break logic built on top of this
+  // field.
+  replyToMessageId: string | null;
+  supersedesMessageId: string | null;
 }
 
 export function sendMessage(
@@ -182,6 +204,16 @@ export function sendMessage(
     // already accepted this field (messagingService.ts's SendMessageInput),
     // this was simply never threaded through from the frontend before.
     attachmentRef?: string;
+    // R5 / U6: set when sending a Reply — the message being replied to.
+    // Validated server-side against the same conversation_id as this new
+    // message (KTD6) before being honored; rejected otherwise.
+    replyToMessageId?: string;
+    // R6 / U6: set when sending an Edit — always the ORIGINAL message's id,
+    // never a prior edit's id (KTD5). The original row's ciphertext is
+    // never mutated; this new row is what the thread renders in the
+    // original's timeline position going forward (see
+    // lib/messageSupersession.ts).
+    supersedesMessageId?: string;
   }
 ) {
   return request<{ id: string; sentAt: string }>(`/v1/conversations/${conversationId}/messages`, {
@@ -268,7 +300,17 @@ export function fileReport(payload: {
   category: "spam" | "harassment" | "csam" | "impersonation" | "other";
   chatRequestId?: string;
   conversationId?: string;
-  evidence?: { plaintextExcerpt?: string };
+  // `messageIds` — R7 / U6 (messenger channel fixes plan): carries the
+  // specific message id(s) a per-message Report action is citing as
+  // evidence. The backend's reports route already accepts this field in
+  // its evidence schema (confirmed in an earlier research pass, U3 in the
+  // plan) and applies the same conversation-scoping validation as
+  // reply/supersede references (KTD5/KTD6) — a reporter may only cite
+  // message ids that actually belong to the conversation/chat-request being
+  // reported. Resolved against the EXACT row referenced at report time, not
+  // through supersession (see the plan's Scope Boundaries) — a later edit
+  // of the reported message does not change what evidence a report holds.
+  evidence?: { plaintextExcerpt?: string; messageIds?: string[] };
 }) {
   return request<{ id: string; status: string }>("/v1/reports", {
     method: "POST",

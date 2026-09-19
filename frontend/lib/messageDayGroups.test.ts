@@ -27,6 +27,8 @@ function msg(id: string, sentAt: string): MessageSummary {
     sentAt,
     deliveredAt: null,
     readAt: null,
+    replyToMessageId: null,
+    supersedesMessageId: null,
   };
 }
 
