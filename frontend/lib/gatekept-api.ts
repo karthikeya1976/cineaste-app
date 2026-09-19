@@ -157,6 +157,16 @@ export interface MessageSummary {
   messageNumber: number;
   attachmentRef: string | null;
   sentAt: string;
+  // issue #22 / U5 (seamless chat plan): sourced from the backend's now-
+  // extended GET /v1/conversations/:id/messages response (U6, merged) —
+  // both null for a freshly-sent message, deliveredAt set once the
+  // recipient's client acks receipt (U2), readAt set (with deliveredAt
+  // backfilled if it wasn't already) once the recipient enters the
+  // conversation (U3). Never set for a message the current user did not
+  // send — see messageStatus.ts's deriveMessageStatus for the precedence
+  // rule this drives.
+  deliveredAt: string | null;
+  readAt: string | null;
 }
 
 export function sendMessage(
