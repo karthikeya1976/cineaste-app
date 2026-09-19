@@ -772,22 +772,6 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
                       {showAvatar && <Avatar name={otherName ?? "?"} size={THREAD_AVATAR_SIZE} />}
                     </div>
                   )}
-                  {/* R4 / U6: the action-menu trigger is ALWAYS rendered
-                      (never hover-gated) on every real message bubble — see
-                      MessageActionMenu.tsx's own header comment for why.
-                      Placed before the bubble for a "theirs" message and
-                      after it for a "mine" message so it always sits on the
-                      OUTER edge of the row, never squeezed against the
-                      avatar/thread wall. */}
-                  {!mine && (
-                    <div style={{ alignSelf: "flex-end" }}>
-                      <MessageActionMenu
-                        actions={menuActions}
-                        onAction={(action) => handleMessageAction(action, m, original.id)}
-                        triggerLabel={`Actions for message from ${otherName ?? "them"}`}
-                      />
-                    </div>
-                  )}
                   <div style={{
                     maxWidth: "75%", borderRadius: "10px", padding: "8px 12px", fontSize: "14px",
                     background: mine ? "var(--accent)" : "var(--bg)",
@@ -818,15 +802,19 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
                     )}
                     {showText && <span>{text}</span>}
                   </div>
-                  {mine && (
-                    <div style={{ alignSelf: "flex-end" }}>
-                      <MessageActionMenu
-                        actions={menuActions}
-                        onAction={(action) => handleMessageAction(action, m, original.id)}
-                        triggerLabel="Actions for your message"
-                      />
-                    </div>
-                  )}
+                  {/* R4 / U6: the action-menu trigger is ALWAYS rendered
+                      (never hover-gated) on every real message bubble — see
+                      MessageActionMenu.tsx's own header comment for why.
+                      Always placed AFTER the bubble regardless of
+                      direction, so it never sits between the avatar and the
+                      message content for a "theirs" row. */}
+                  <div style={{ alignSelf: "flex-end" }}>
+                    <MessageActionMenu
+                      actions={menuActions}
+                      onAction={(action) => handleMessageAction(action, m, original.id)}
+                      triggerLabel={mine ? "Actions for your message" : `Actions for message from ${otherName ?? "them"}`}
+                    />
+                  </div>
                 </div>
                 {/* issue #22 / U5: sent/delivered/read ticks, rendered ONLY
                     for the current user's own messages — a recipient never
