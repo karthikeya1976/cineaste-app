@@ -45,8 +45,10 @@ import {
 import { AttachmentMessage } from "@/components/AttachmentMessage";
 import { Avatar } from "@/components/Avatar";
 import { TypingIndicator } from "@/components/TypingIndicator";
+import { MessageStatusTicks } from "@/components/MessageStatusTicks";
 import { uploadAttachment, isPresignExpired } from "@/lib/gatekept-attachments";
 import { isLastInSenderRun } from "@/lib/messageRuns";
+import { deriveMessageStatus } from "@/lib/messageStatus";
 import { getUser, isLoggedIn } from "@/lib/auth";
 
 // Avatar sizing/gap for the message-thread placement (issue #17 / U8):
@@ -121,6 +123,15 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
   // silence, and is explicitly cleared (not just left to fire later) on
   // unmount/navigating away per this unit's own requirement.
   const typingClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // issue #22 / U5: message_numbers (of the OTHER participant's messages)
+  // this page has already called sendDelivered() for — a ref, not state,
+  // matching this file's existing write-once WS-bookkeeping style
+  // (nextMessageNumber/lastSeenMessageNumber above). Write-once bookkeeping
+  // that must survive re-renders without itself driving one: without this,
+  // every poll tick / re-render would re-send a delivered ack for every
+  // still-visible message from the other participant instead of exactly
+  // once per message.
+  const ackedMessageNumbers = useRef(new Set<number>());
 
   const me = getUser();
 
@@ -131,10 +142,36 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
   // the WS connection never establishes at all.
   const lastSeenMessageNumber = useRef(-1);
 
+  // issue #22 / U5: sends a `delivered` ack (getRealtimeClient().
+  // sendDelivered) for every message in `incoming` that was sent by the
+  // OTHER participant and hasn't already been acked by this page, then
+  // records it in ackedMessageNumbers so it's never re-sent. Called from
+  // both load()'s poll (works even if the WS layer never connects — this
+  // codebase's established "polling is always the fallback" posture) and
+  // the live "message" WS event branch below, so delivery acks happen
+  // whether or not the socket is up. sendDelivered itself no-ops silently
+  // when not connected (see gatekept-ws.ts), which is fine here — the next
+  // successful load() or reconnect will simply re-attempt any message this
+  // call couldn't actually deliver over the wire, since it's only added to
+  // ackedMessageNumbers once attempted, not once confirmed (matching
+  // sendDelivered's own "fire and forget, no reply" contract).
+  const ackDeliveredFor = useCallback(
+    (incoming: MessageSummary[]) => {
+      for (const m of incoming) {
+        if (m.senderId === me?.id) continue;
+        if (ackedMessageNumbers.current.has(m.messageNumber)) continue;
+        ackedMessageNumbers.current.add(m.messageNumber);
+        getRealtimeClient().sendDelivered(conversationId, m.messageNumber);
+      }
+    },
+    [conversationId, me?.id]
+  );
+
   const load = useCallback(async () => {
     try {
       const { messages } = await getMessages(conversationId, -1);
       setMessages(messages);
+      ackDeliveredFor(messages);
       nextMessageNumber.current = messages.length
         ? Math.max(...messages.map((m) => m.messageNumber)) + 1
         : 0;
@@ -160,7 +197,7 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
     } finally {
       setLoading(false);
     }
-  }, [conversationId, me?.id]);
+  }, [conversationId, me?.id, ackDeliveredFor]);
 
   /**
    * Merges a single live/replayed full-message event into `messages`
@@ -209,6 +246,25 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
           setOtherIsTyping(false);
           typingClearTimer.current = null;
         }, TYPING_CLEAR_TIMEOUT_MS);
+      }
+      if (event.type === "status" && event.conversationId === conversationId) {
+        // issue #22 / U5: the server only ever sends a status event for a
+        // message the CURRENT USER sent (see StatusEvent's own doc comment
+        // in gatekept-ws.ts) — but the client doesn't assume that (defensive,
+        // per the issue's acceptance criteria: a status event referencing a
+        // message not sent by the current user is ignored, not trusted
+        // blindly). The simplest correct way to apply this update is the
+        // same "something changed, just refetch" pattern the
+        // resume_fallback branch above already uses: reuse load() (the
+        // existing HTTP fetch) to pick up the updated deliveredAt/readAt
+        // U6's route now returns, rather than building a separate
+        // in-memory status-patching mechanism. load() itself only ever
+        // renders whatever the server actually reports per message, so a
+        // status event for a message the current user didn't send simply
+        // has no effect on that message's rendered state (deriveMessageStatus
+        // is only ever invoked for m.senderId === me?.id in the render
+        // below) — that's what makes this "ignored" rather than trusted.
+        void load();
       }
     },
     [conversationId, load]
@@ -495,24 +551,43 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
             // earlier-in-run bubbles left.
             const showAvatar = !mine && isLastInSenderRun(messages, i);
             return (
-              <div key={m.id} style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start" }}>
-                {!mine && (
-                  <div style={{ width: `${THREAD_AVATAR_SIZE}px`, flexShrink: 0, marginRight: THREAD_AVATAR_GAP, alignSelf: "flex-end" }}>
-                    {showAvatar && <Avatar name={otherName ?? "?"} size={THREAD_AVATAR_SIZE} />}
+              <div key={m.id} style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
+                <div style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start", width: "100%" }}>
+                  {!mine && (
+                    <div style={{ width: `${THREAD_AVATAR_SIZE}px`, flexShrink: 0, marginRight: THREAD_AVATAR_GAP, alignSelf: "flex-end" }}>
+                      {showAvatar && <Avatar name={otherName ?? "?"} size={THREAD_AVATAR_SIZE} />}
+                    </div>
+                  )}
+                  <div style={{
+                    maxWidth: "75%", borderRadius: "10px", padding: "8px 12px", fontSize: "14px",
+                    background: mine ? "var(--accent)" : "var(--bg)",
+                    color: mine ? "#fff" : "var(--fg)",
+                    border: mine ? "none" : "1px solid var(--border)",
+                    display: "flex", flexDirection: "column", gap: "6px",
+                  }}>
+                    {m.attachmentRef && (
+                      <AttachmentMessage conversationId={conversationId} attachmentRef={m.attachmentRef} />
+                    )}
+                    {showText && <span>{text}</span>}
+                  </div>
+                </div>
+                {/* issue #22 / U5: sent/delivered/read ticks, rendered ONLY
+                    for the current user's own messages — a recipient never
+                    needs to see their own read status of someone else's
+                    message. Rendered below the bubble (on the thread's own
+                    background) rather than inside it: the "mine" bubble's
+                    background is var(--accent), the same token the "read"
+                    tick uses for its own color, so placing the tick inside
+                    that bubble would make "read" render invisible against
+                    it — a real contrast bug, not a styling preference, so
+                    the tick sits just outside the bubble instead, where
+                    var(--fg-muted)/var(--accent) are both legible against
+                    the thread's own background. */}
+                {mine && (
+                  <div style={{ marginTop: "2px", paddingRight: "2px" }}>
+                    <MessageStatusTicks state={deriveMessageStatus(m)} />
                   </div>
                 )}
-                <div style={{
-                  maxWidth: "75%", borderRadius: "10px", padding: "8px 12px", fontSize: "14px",
-                  background: mine ? "var(--accent)" : "var(--bg)",
-                  color: mine ? "#fff" : "var(--fg)",
-                  border: mine ? "none" : "1px solid var(--border)",
-                  display: "flex", flexDirection: "column", gap: "6px",
-                }}>
-                  {m.attachmentRef && (
-                    <AttachmentMessage conversationId={conversationId} attachmentRef={m.attachmentRef} />
-                  )}
-                  {showText && <span>{text}</span>}
-                </div>
               </div>
             );
           })
