@@ -46,9 +46,11 @@ import { AttachmentMessage } from "@/components/AttachmentMessage";
 import { Avatar } from "@/components/Avatar";
 import { TypingIndicator } from "@/components/TypingIndicator";
 import { MessageStatusTicks } from "@/components/MessageStatusTicks";
+import { DaySeparator } from "@/components/DaySeparator";
 import { uploadAttachment, isPresignExpired } from "@/lib/gatekept-attachments";
 import { isLastInSenderRun } from "@/lib/messageRuns";
 import { deriveMessageStatus } from "@/lib/messageStatus";
+import { groupMessagesByDay } from "@/lib/messageDayGroups";
 import { getUser, isLoggedIn } from "@/lib/auth";
 
 // Avatar sizing/gap for the message-thread placement (issue #17 / U8):
@@ -73,6 +75,19 @@ const POLL_INTERVAL_MS = 3000;
 // during a continuous typing burst.
 const TYPING_SEND_INTERVAL_MS = 2000;
 const TYPING_CLEAR_TIMEOUT_MS = 3500;
+
+// R3 / U5 (messenger channel fixes plan): formats a message's `sentAt` as a
+// local clock time (e.g. "3:42 PM") for display under each bubble, adjacent
+// to MessageStatusTicks. Uses the viewer's local timezone (toLocaleTimeString
+// with no explicit timeZone) to match groupMessagesByDay's own local-day
+// boundary rule — both derive "what day/time is this, to this viewer" the
+// same way rather than one using local and the other UTC.
+function formatMessageTime(sentAt: string): string {
+  return new Date(sentAt).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 const btnSecondary: React.CSSProperties = {
   padding: "6px 12px", fontSize: "12px", fontWeight: 500,
@@ -530,7 +545,24 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
             No messages yet — say hello.
           </p>
         ) : (
-          messages.map((m, i) => {
+          // R3 / U5: the flat, chronologically-ordered `messages` array is
+          // interleaved with day-separator entries by groupMessagesByDay
+          // (lib/messageDayGroups.ts) before rendering, replacing the
+          // former plain `messages.map(...)`. isLastInSenderRun still
+          // compares against the ORIGINAL flat `messages` array (a run can
+          // legitimately span a day boundary — e.g. the same sender's last
+          // message before midnight and first message after it are still
+          // one run for avatar-placement purposes), so each "message" entry
+          // below looks up its own index (`i`, via messages.indexOf) in the
+          // original `messages` array rather than any index local to the
+          // day-grouped array.
+          groupMessagesByDay(messages).map((entry) => {
+            if (entry.type === "separator") {
+              return <DaySeparator key={`separator-${entry.date.toISOString()}`} date={entry.date} />;
+            }
+
+            const m = entry.message;
+            const i = messages.indexOf(m);
             const mine = m.senderId === me?.id;
             // A single-space placeholder is sent for attachment-only
             // messages (see handleSend) so the placeholder-crypto layer
@@ -582,12 +614,18 @@ export default function ConversationPage({ params }: { params: Promise<{ convers
                     it — a real contrast bug, not a styling preference, so
                     the tick sits just outside the bubble instead, where
                     var(--fg-muted)/var(--accent) are both legible against
-                    the thread's own background. */}
-                {mine && (
-                  <div style={{ marginTop: "2px", paddingRight: "2px" }}>
-                    <MessageStatusTicks state={deriveMessageStatus(m)} />
-                  </div>
-                )}
+                    the thread's own background.
+
+                    R3 / U5: the local send-time string sits in the SAME row
+                    as the ticks (not stacked above/below), timestamp first
+                    then ticks, so the two never visually collide — for a
+                    "theirs" bubble (no ticks rendered at all) the row still
+                    renders with just the timestamp, left-aligned under that
+                    bubble. */}
+                <div style={{ marginTop: "2px", paddingRight: mine ? "2px" : 0, display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>{formatMessageTime(m.sentAt)}</span>
+                  {mine && <MessageStatusTicks state={deriveMessageStatus(m)} />}
+                </div>
               </div>
             );
           })
