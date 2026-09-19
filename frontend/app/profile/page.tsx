@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { upgradeToCreator } from "@/lib/api";
 import { getUser, setAuth, getToken, clearAuth, type AuthUser } from "@/lib/auth";
@@ -249,9 +250,27 @@ export default function ProfilePage() {
           </div>
         )}
 
+        {/* Privacy is a real page now (blocked-users list) — no longer a
+            "Soon" placeholder like the two rows below it. */}
+        <Link
+          href="/settings/privacy"
+          style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            padding: "14px 0", borderBottom: "1px solid var(--border)",
+            textDecoration: "none", cursor: "pointer",
+          }}
+        >
+          <div>
+            <p style={{ fontWeight: 600, fontSize: "14px", color: "var(--fg)", margin: 0 }}>Privacy</p>
+            <p style={{ fontSize: "12px", color: "var(--fg-muted)", margin: "2px 0 0" }}>Manage who you&apos;ve blocked</p>
+          </div>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--fg-muted)" strokeWidth="2" style={{ flexShrink: 0, marginLeft: "12px" }}>
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </Link>
+
         {[
           { label: "Notifications", desc: "Email alerts for new followers and credits" },
-          { label: "Privacy", desc: "Control who can see your profile and videos" },
           { label: "Account", desc: "Change password or delete your account" },
         ].map((s, i, arr) => (
           <div key={s.label} style={{
