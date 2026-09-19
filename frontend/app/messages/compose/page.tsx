@@ -29,6 +29,7 @@ import {
 import { placeholderEncrypt } from "@/lib/gatekept-crypto";
 import { CryptoNotice } from "@/components/CryptoNotice";
 import { getUser, isLoggedIn } from "@/lib/auth";
+import { hasOutboundPending, recordOutboundPending } from "@/lib/pendingOutboundRequests";
 
 type Step = "idle" | "found" | "sent";
 
@@ -140,6 +141,23 @@ function MessagesSearchPageInner() {
     }
   }
 
+  // U8 (messenger channel fixes plan, R8/KTD10): once a recipient is
+  // selected, warn the sender if this browser already recorded an
+  // unresolved outbound pending request to them, rather than letting them
+  // submit a second one that the server's idx_chat_requests_one_pending
+  // gate would then silently absorb with no client-side feedback at all.
+  // Purely a UX nicety layered on that already-correct server-side
+  // backstop — see pendingOutboundRequests.ts's own module comment for why
+  // this is tracked client-side rather than via a new backend listing
+  // endpoint (this repo has no existing call for a user's own SENT pending
+  // requests, only listPendingRequests()'s inbound/recipient-side one), and
+  // for why a stale or missing client-side record is an accepted degraded
+  // case, not a bug: the server remains the real gate either way.
+  const alreadyPending =
+    step === "found" && target && me
+      ? hasOutboundPending(me.id, target.id)
+      : false;
+
   function selectTarget(user: DirectoryUser) {
     setTarget(user);
     setDraft("");
@@ -176,6 +194,11 @@ function MessagesSearchPageInner() {
         senderRegistrationId: Math.floor(Math.random() * 16384),
         senderDeviceId: 1,
       });
+
+      // Record this send so a later visit back to this recipient (same
+      // browser, same account) picks up the disabled-button warning above
+      // instead of allowing an obvious duplicate send.
+      if (me) recordOutboundPending(me.id, target.id);
 
       setStep("sent");
     } catch (err) {
@@ -323,6 +346,15 @@ function MessagesSearchPageInner() {
             <p style={{ fontSize: "12px", color: "var(--fg-muted)", margin: 0 }}>No photos or videos on a first message — text only.</p>
             <CryptoNotice compact />
 
+            {alreadyPending && (
+              <p
+                role="alert"
+                style={{ fontSize: "13px", color: "#fbbf24", background: "#78350f22", border: "1px solid #78350f55", borderRadius: "8px", padding: "10px 12px", margin: 0 }}
+              >
+                You already have a pending request with this person — wait for them to respond.
+              </p>
+            )}
+
             {error && (
               <p style={{ fontSize: "13px", color: "#f87171", background: "#7f1d1d22", border: "1px solid #7f1d1d55", borderRadius: "8px", padding: "10px 12px", margin: 0 }}>
                 {error}
@@ -330,7 +362,11 @@ function MessagesSearchPageInner() {
             )}
 
             <div style={{ display: "flex", gap: "10px" }}>
-              <button type="submit" disabled={sending || !draft.trim()} style={{ ...btnPrimary, opacity: sending || !draft.trim() ? 0.6 : 1 }}>
+              <button
+                type="submit"
+                disabled={sending || !draft.trim() || alreadyPending}
+                style={{ ...btnPrimary, opacity: sending || !draft.trim() || alreadyPending ? 0.6 : 1 }}
+              >
                 {sending ? "Sending…" : "Send message"}
               </button>
               <button
