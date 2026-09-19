@@ -209,6 +209,26 @@ describe("GatekeptRealtimeClient event dispatch", () => {
     expect(listener).toHaveBeenCalledWith({ type: "typing", conversationId: "c-1", senderId: "u1" });
   });
 
+  it("dispatches a status event to onEvent subscribers", async () => {
+    const { client, socket } = await connectedClient();
+    const listener = vi.fn();
+    client.onEvent(listener);
+
+    socket.simulateMessage({
+      type: "status",
+      conversationId: "c-1",
+      messageNumber: 5,
+      state: "delivered",
+    });
+
+    expect(listener).toHaveBeenCalledWith({
+      type: "status",
+      conversationId: "c-1",
+      messageNumber: 5,
+      state: "delivered",
+    });
+  });
+
   it("does not dispatch the internal 'connected' ack itself as a RealtimeEvent", async () => {
     const { client, socket } = await connectedClient();
     const listener = vi.fn();
@@ -225,6 +245,16 @@ describe("GatekeptRealtimeClient event dispatch", () => {
     client.onEvent(listener);
 
     expect(() => socket.onmessage?.({ data: "not json {{{" })).not.toThrow();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("filters out an unrecognized event type (regression: adding 'status' didn't widen the allow-list beyond intended types)", async () => {
+    const { client, socket } = await connectedClient();
+    const listener = vi.fn();
+    client.onEvent(listener);
+
+    socket.simulateMessage({ type: "some_future_type_not_yet_added", conversationId: "c-1" });
+
     expect(listener).not.toHaveBeenCalled();
   });
 
@@ -316,6 +346,30 @@ describe("GatekeptRealtimeClient.sendTyping", () => {
     const { GatekeptRealtimeClient } = await import("./gatekept-ws");
     const client = new GatekeptRealtimeClient();
     expect(() => client.sendTyping("conv-1")).not.toThrow();
+  });
+});
+
+describe("GatekeptRealtimeClient.sendDelivered", () => {
+  it("sends a delivered message matching U2's protocol", async () => {
+    mockFetchTicket();
+    const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+    const client = new GatekeptRealtimeClient();
+    const connectPromise = client.connect();
+    const socket = await waitForInstance();
+    socket.simulateConnected();
+    await connectPromise;
+
+    client.sendDelivered("conv-42", 7);
+
+    expect(socket.sent).toContain(
+      JSON.stringify({ type: "delivered", conversationId: "conv-42", messageNumber: 7 })
+    );
+  });
+
+  it("is a no-op (does not throw) when not connected", async () => {
+    const { GatekeptRealtimeClient } = await import("./gatekept-ws");
+    const client = new GatekeptRealtimeClient();
+    expect(() => client.sendDelivered("conv-1", 1)).not.toThrow();
   });
 });
 

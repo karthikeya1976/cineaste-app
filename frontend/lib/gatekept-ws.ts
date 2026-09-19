@@ -92,7 +92,25 @@ export type TypingEvent = {
   senderId: string;
 };
 
-export type RealtimeEvent = FullMessageEvent | BadgeEvent | ResumeFallbackEvent | TypingEvent;
+// issue #20 / U4 / plan docs/plans/2026-09-18-001-feat-seamless-chat-
+// experience-plan.md: pushed when the server has confirmed a message this
+// client sent has been delivered or read by the other participant (see
+// gatekept/backend/src/services/messageStatus.ts, U2/U3). Only ever
+// received for messages the current user SENT — the server never sends
+// this for a message the recipient itself received.
+export type StatusEvent = {
+  type: "status";
+  conversationId: string;
+  messageNumber: number;
+  state: "delivered" | "read";
+};
+
+export type RealtimeEvent =
+  | FullMessageEvent
+  | BadgeEvent
+  | ResumeFallbackEvent
+  | TypingEvent
+  | StatusEvent;
 
 type EventListener = (event: RealtimeEvent) => void;
 type ConnectionListener = () => void;
@@ -151,7 +169,13 @@ function parseIncoming(raw: string): RealtimeEvent | null {
     const parsed = JSON.parse(raw) as unknown;
     if (typeof parsed !== "object" || parsed === null || !("type" in parsed)) return null;
     const type = (parsed as { type: unknown }).type;
-    if (type === "message" || type === "badge" || type === "resume_fallback" || type === "typing") {
+    if (
+      type === "message" ||
+      type === "badge" ||
+      type === "resume_fallback" ||
+      type === "typing" ||
+      type === "status"
+    ) {
       return parsed as RealtimeEvent;
     }
     // Other server message types (`connected`, `enter_conversation_result`)
@@ -359,6 +383,22 @@ export class GatekeptRealtimeClient {
   }
 
   /**
+   * Tells the server this client has received message `messageNumber` in
+   * `conversationId` — matching U2's `delivered` protocol
+   * (gatekept/backend/src/services/messageStatus.ts). Mirrors
+   * enterConversation/sendTyping's exact shape: guard on
+   * `readyState === OPEN`, no-op (does not throw) if not currently
+   * connected. Called once per message received from the other
+   * participant (see the conversation page's own dedup bookkeeping) — this
+   * wrapper sends unconditionally on every call, it does not itself
+   * dedupe or throttle.
+   */
+  sendDelivered(conversationId: string, messageNumber: number): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify({ type: "delivered", conversationId, messageNumber }));
+  }
+
+  /**
    * Registers (or updates) this client's current last-seen
    * `message_number` for a conversation — KTD6's per-connection resume
    * cursor. Callers (the conversation page) call this whenever they render
@@ -401,8 +441,8 @@ export class GatekeptRealtimeClient {
   }
 
   /**
-   * Subscribes to incoming full-message, badge, resume_fallback, and
-   * typing events. Returns an unsubscribe function (standard
+   * Subscribes to incoming full-message, badge, resume_fallback, typing,
+   * and status events. Returns an unsubscribe function (standard
    * observer-cleanup shape, matching how the rest of this codebase tears
    * down effects/listeners).
    */
