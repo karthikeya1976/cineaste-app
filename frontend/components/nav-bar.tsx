@@ -183,9 +183,15 @@ export default function NavBar() {
           // led anywhere useful. While the badge is visible, route this
           // link to the requests inbox instead — the natural landing spot
           // for "something needs your attention" — falling back to the
-          // normal compose page once there's nothing pending.
+          // conversations list (the canonical landing page as of the nav
+          // restructure, KTD1) once there's nothing pending. Only this
+          // fallback branch changes — item.href itself stays the literal
+          // "/messages" string, since it's also compared by exact match
+          // below (the dot's own visibility condition) and by prefix match
+          // in the `active` check above; repointing item.href itself would
+          // silently break both (see KTD4).
           const href =
-            item.href === "/messages" && navDotVisible ? "/messages/requests" : item.href;
+            item.href === "/messages" && navDotVisible ? "/messages/requests" : "/messages/conversations";
           return (
             <Link
               key={item.href}

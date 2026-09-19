@@ -129,7 +129,7 @@ export default function CreatorProfilePage() {
           <button
             onClick={() => {
               if (!isLoggedIn()) { router.push("/"); return; }
-              router.push(`/messages?to=${profile.id}&name=${encodeURIComponent(profile.name)}&type=${profile.account_type}`);
+              router.push(`/messages/compose?to=${profile.id}&name=${encodeURIComponent(profile.name)}&type=${profile.account_type}`);
             }}
             style={{
               flex: 1, padding: "10px", fontSize: "14px", fontWeight: 600,

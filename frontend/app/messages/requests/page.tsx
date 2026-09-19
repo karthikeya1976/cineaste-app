@@ -9,6 +9,7 @@
 // the lookup doesn't return rather than blocking or erroring the list.
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   listPendingRequests,
@@ -23,9 +24,10 @@ import {
 } from "@/lib/gatekept-api";
 import { placeholderDecrypt } from "@/lib/gatekept-crypto";
 import { CryptoNotice } from "@/components/CryptoNotice";
-import { MessagesNavTabs } from "@/components/MessagesNavTabs";
+import { OffensiveBanner } from "@/components/OffensiveBanner";
 import { isLoggedIn } from "@/lib/auth";
 import { isChatRequestUnread, clearUnreadChatRequest, subscribeUnreadRows } from "@/lib/gatekept-notifications";
+import { getRequestDisplayMode, isConfirmedAbusive } from "@/lib/offensiveContent";
 
 const btnPrimary: React.CSSProperties = {
   padding: "8px 14px", fontSize: "13px", fontWeight: 600,
@@ -56,6 +58,14 @@ export default function RequestsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  // U7 (R9/KTD9): id of a request currently showing the inline "Accept
+  // anyway?" confirmation step. Scoped to at most one row at a time (a
+  // second Accept click on a different row simply swaps which row is
+  // confirming) — this gate only ever applies to confirmed scanVerdict ===
+  // "abusive" rows, not every banner-displaying row (see
+  // lib/offensiveContent.ts's isConfirmedAbusive vs. getRequestDisplayMode
+  // distinction).
+  const [confirmingAcceptId, setConfirmingAcceptId] = useState<string | null>(null);
   // Bumped on every unread-row change so this component re-renders — the
   // underlying unread state lives in gatekept-notifications' plain module
   // store (shared with the nav dot and toast stack), not React state.
@@ -107,6 +117,23 @@ export default function RequestsPage() {
       setError("Could not accept that request.");
       setBusyId(null);
     }
+  }
+
+  // U7 (R9/KTD9): Accept's entry point from the row button. For a confirmed
+  // scanVerdict === "abusive" row, the first click only opens the inline
+  // "Accept anyway?" confirmation — it does NOT call the accept API. A
+  // second click (the confirmation's own Accept button) calls
+  // handleAccept() for real. For every other row (including banner rows
+  // whose scanVerdict is merely missing/unrecognized rather than a
+  // confirmed "abusive"), this is a direct one-tap call, unchanged from
+  // before this unit.
+  function onAcceptClick(req: ChatRequestSummary) {
+    if (isConfirmedAbusive(req.scanVerdict) && confirmingAcceptId !== req.id) {
+      setConfirmingAcceptId(req.id);
+      return;
+    }
+    setConfirmingAcceptId(null);
+    void handleAccept(req);
   }
 
   async function handleReject(req: ChatRequestSummary) {
@@ -162,14 +189,35 @@ export default function RequestsPage() {
 
   return (
     <div style={{ maxWidth: "600px", margin: "0 auto" }}>
+      {/* Back to the canonical conversations landing page — this surface
+          has no rendered back-link JSX elsewhere to copy (the closest
+          precedent, conversations/[conversationId]/page.tsx's block/report
+          handlers, is a programmatic router.push inside an action handler,
+          not a rendered link), so this is a small new element styled
+          consistently with the app's existing link/icon conventions (see
+          creators/[id]/page.tsx's own "Back" button for the same
+          icon+label shape). */}
+      <Link
+        href="/messages/conversations"
+        style={{
+          display: "inline-flex", alignItems: "center", gap: "6px",
+          background: "none", border: "none", cursor: "pointer",
+          color: "var(--fg-muted)", fontSize: "13px", marginBottom: "20px",
+          textDecoration: "none",
+        }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+        Conversations
+      </Link>
+
       <div style={{ marginBottom: "20px" }}>
         <h1 style={{ fontSize: "22px", fontWeight: 700, color: "var(--fg)" }}>Message requests</h1>
         <p style={{ fontSize: "13px", color: "var(--fg-muted)", marginTop: "4px" }}>
           People who&apos;ve sent you a first message. Accepting opens a two-way conversation.
         </p>
       </div>
-
-      <MessagesNavTabs />
 
       <div style={{ marginBottom: "20px" }}>
         <CryptoNotice />
@@ -192,6 +240,10 @@ export default function RequestsPage() {
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           {requests.map((req) => {
             const unread = isChatRequestUnread(req.id);
+            // U7 (R9/KTD9): fail-closed — banner shows unless scanVerdict is
+            // exactly "clean" or "uncertain". See lib/offensiveContent.ts.
+            const showBanner = getRequestDisplayMode(req.scanVerdict) === "banner";
+            const isConfirmingAccept = confirmingAcceptId === req.id;
             return (
             <div key={req.id} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
               <p style={{ fontSize: "13px", fontWeight: unread ? 700 : 600, color: "var(--fg)", margin: 0, display: "flex", alignItems: "center", gap: "6px" }}>
@@ -200,11 +252,36 @@ export default function RequestsPage() {
                 )}
                 {nameFor(names, req.senderId)}
               </p>
-              <p style={{ fontSize: "14px", color: "var(--fg)", margin: 0 }}>{placeholderDecrypt(req.ciphertext)}</p>
+              {showBanner ? (
+                <OffensiveBanner />
+              ) : (
+                <p style={{ fontSize: "14px", color: "var(--fg)", margin: 0 }}>{placeholderDecrypt(req.ciphertext)}</p>
+              )}
+              {isConfirmingAccept && (
+                <div role="alert" style={{ padding: "10px 12px", borderRadius: "8px", background: "#7c2d1222", border: "1px solid #7c2d1255", fontSize: "13px", color: "var(--fg)", display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <span>This message was flagged as potentially abusive. Accept anyway?</span>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button onClick={() => onAcceptClick(req)} disabled={busyId === req.id} style={{ ...btnPrimary, opacity: busyId === req.id ? 0.6 : 1 }}>
+                      Accept anyway
+                    </button>
+                    <button onClick={() => setConfirmingAcceptId(null)} disabled={busyId === req.id} style={{ ...btnSecondary, opacity: busyId === req.id ? 0.6 : 1 }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
               <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                <button onClick={() => handleAccept(req)} disabled={busyId === req.id} style={{ ...btnPrimary, opacity: busyId === req.id ? 0.6 : 1 }}>
-                  Accept
-                </button>
+                {/* When the inline confirmation above is open, its own
+                    "Accept anyway" button is the sole Accept affordance —
+                    hiding this one avoids two differently-worded Accept
+                    buttons on screen at once. Reject/Block/Report stay
+                    rendered and one-tap regardless (per KTD9, only Accept
+                    gets the extra step). */}
+                {!isConfirmingAccept && (
+                  <button onClick={() => onAcceptClick(req)} disabled={busyId === req.id} style={{ ...btnPrimary, opacity: busyId === req.id ? 0.6 : 1 }}>
+                    Accept
+                  </button>
+                )}
                 <button onClick={() => handleReject(req)} disabled={busyId === req.id} style={{ ...btnSecondary, opacity: busyId === req.id ? 0.6 : 1 }}>
                   Dismiss
                 </button>
