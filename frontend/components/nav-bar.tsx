@@ -190,8 +190,19 @@ export default function NavBar() {
           // below (the dot's own visibility condition) and by prefix match
           // in the `active` check above; repointing item.href itself would
           // silently break both (see KTD4).
-          const href =
-            item.href === "/messages" && navDotVisible ? "/messages/requests" : "/messages/conversations";
+          //
+          // BUG FIX: this special-casing must be scoped to the Messages
+          // item only. A prior version applied the "/messages/conversations"
+          // fallback unconditionally to every item's href (missing the
+          // item.href === "/messages" guard on the whole expression, not
+          // just the navDotVisible check) — every nav link (Home, Search,
+          // Messages) silently pointed at the same URL, so clicking Home or
+          // Search while already on /messages/conversations was a no-op
+          // (same-URL Link navigation), which looked exactly like "nothing
+          // happens" since there was nowhere to navigate to.
+          const href = item.href === "/messages"
+            ? (navDotVisible ? "/messages/requests" : "/messages/conversations")
+            : item.href;
           return (
             <Link
               key={item.href}
