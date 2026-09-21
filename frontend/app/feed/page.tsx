@@ -4,6 +4,9 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
 import { getFeed, giveCredit, followCreator, unfollowCreator, getComments, postComment, type Job, type Comment, type FeedResponse } from "@/lib/api";
 import { isLoggedIn } from "@/lib/auth";
+import { isDivider, type FeedItem, type SectionDivider } from "@/lib/feedItems";
+import { classifyPointerUp, shouldCancelLongPress, LONG_PRESS_MS } from "@/lib/gestureClassifier";
+import { ThumbnailStrip } from "@/components/ThumbnailStrip";
 
 /* ── SVG icon components ─────────────────────────────────────────────────── */
 function IconStar({ filled }: { filled: boolean }) {
@@ -156,58 +159,117 @@ function CommentDrawer({ jobId, onClose }: { jobId: string; onClose: () => void 
   );
 }
 
-/* ── Section divider ─────────────────────────────────────────────────────── */
-type SectionDivider = { _divider: true; label: string };
-type FeedItem = Job | SectionDivider;
-function isDivider(item: FeedItem | undefined): item is SectionDivider {
-  return item != null && "_divider" in item;
-}
-
 /* ── Swipeable reel card ─────────────────────────────────────────────────── */
+// Gesture axis flip (horizontal-swipe feed redesign): the actual tap vs.
+// swipe vs. long-press decision now lives in lib/gestureClassifier.ts as a
+// pure, unit-tested function — this component is a thin shell around it:
+// refs + a long-press timer, calling classifyPointerUp() once per gesture
+// and switching on the result. See that module's header comment for the
+// full disambiguation rationale (why movement permanently cancels a
+// pending long-press rather than re-arming, why the axis-dominance check
+// on swipe direction matters now that swipe is horizontal, etc).
 function SwipeCard({
   children,
-  onSwipeUp,
-  onSwipeDown,
-  onClick,
+  onSwipeNext,
+  onSwipePrev,
+  onTap,
+  onLongPress,
 }: {
   children: React.ReactNode;
-  onSwipeUp: () => void;
-  onSwipeDown: () => void;
-  onClick: () => void;
+  onSwipeNext: () => void;
+  onSwipePrev: () => void;
+  onTap: () => void;
+  onLongPress: () => void;
 }) {
-  const startY   = useRef<number | null>(null);
-  const startX   = useRef<number | null>(null);
-  const dragging = useRef(false);
+  const startY          = useRef<number | null>(null);
+  const startX          = useRef<number | null>(null);
+  const everDragged     = useRef(false);
+  const longPressTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFired  = useRef(false);
+
+  function clearLongPressTimer() {
+    if (longPressTimer.current !== null) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }
+
+  function resetGestureRefs() {
+    startY.current = null;
+    startX.current = null;
+    everDragged.current = false;
+    longPressFired.current = false;
+    clearLongPressTimer();
+  }
 
   function onPointerDown(e: React.PointerEvent) {
-    startY.current   = e.clientY;
-    startX.current   = e.clientX;
-    dragging.current = false;
+    startY.current = e.clientY;
+    startX.current = e.clientX;
+    everDragged.current = false;
+    longPressFired.current = false;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+
+    clearLongPressTimer();
+    longPressTimer.current = setTimeout(() => {
+      longPressFired.current = true;
+      onLongPress();
+    }, LONG_PRESS_MS);
   }
 
   function onPointerMove(e: React.PointerEvent) {
-    if (startY.current === null) return;
-    if (Math.abs(e.clientY - startY.current) > 8) dragging.current = true;
+    if (startY.current === null || startX.current === null) return;
+    if (longPressFired.current) return; // strip already open — nothing left to classify
+    const dx = e.clientX - startX.current;
+    const dy = e.clientY - startY.current;
+    if (!everDragged.current && shouldCancelLongPress(dx, dy)) {
+      everDragged.current = true;
+      // Movement past tolerance permanently disqualifies this gesture from
+      // becoming a long-press — never re-armed even if the pointer later
+      // goes still again mid-drag.
+      clearLongPressTimer();
+    }
   }
 
   function onPointerUp(e: React.PointerEvent) {
-    if (startY.current === null) return;
+    if (startY.current === null || startX.current === null) {
+      resetGestureRefs();
+      return;
+    }
+    const dx = e.clientX - startX.current;
     const dy = e.clientY - startY.current;
-    const dx = startX.current !== null ? Math.abs(e.clientX - startX.current) : 0;
 
-    if (dragging.current && Math.abs(dy) > 40 && Math.abs(dy) > dx) {
-      // Vertical swipe — treat as navigation
-      if (dy < 0) onSwipeUp();   // swipe up = next
-      else        onSwipeDown(); // swipe down = prev
-    } else if (!dragging.current) {
-      // No meaningful movement = tap/click
-      onClick();
+    const result = classifyPointerUp({
+      dx,
+      dy,
+      everDragged: everDragged.current,
+      longPressFired: longPressFired.current,
+    });
+
+    switch (result.type) {
+      case "swipe":
+        if (result.direction === "next") onSwipeNext();
+        else onSwipePrev();
+        break;
+      case "tap":
+        onTap();
+        break;
+      case "long-press":
+      case "cancelled":
+        // long-press: strip already opened via the timer callback, nothing
+        // further to do here. cancelled: sub-threshold drag, snap back.
+        break;
     }
 
-    startY.current   = null;
-    startX.current   = null;
-    dragging.current = false;
+    resetGestureRefs();
+  }
+
+  function onPointerCancel() {
+    // A real gap in the original implementation, which had no cancel/leave
+    // handler at all — low-risk for a 40px-threshold sub-second swipe, but
+    // a 3-second hold has a much longer window for something (an OS
+    // gesture, browser chrome) to steal the pointer. Must not leave a
+    // dangling timer that fires the strip open after the user has moved on.
+    resetGestureRefs();
   }
 
   return (
@@ -215,6 +277,8 @@ function SwipeCard({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      tabIndex={0}
       style={{
         position: "relative",
         width: "min(380px, 100%)",
@@ -225,10 +289,13 @@ function SwipeCard({
         boxShadow: "0 8px 48px rgba(0,0,0,0.7)",
         touchAction: "none",   // prevent browser scroll hijacking on mobile
         userSelect: "none",
+        WebkitUserSelect: "none",
+        WebkitTouchCallout: "none", // suppress iOS Safari's native long-press callout
         cursor: "grab",
       }}
     >
       {children}
+      <span className="sr-only">Press Enter to jump to another video</span>
     </div>
   );
 }
@@ -247,6 +314,7 @@ export default function FeedPage() {
   const [paused, setPaused]             = useState(false);
   const [commenting, setCommenting]     = useState(false);
   const [toast, setToast]               = useState("");
+  const [stripOpen, setStripOpen]       = useState(false);
   const videoRefs                       = useRef<Record<string, HTMLVideoElement | null>>({});
 
   useEffect(() => {
@@ -289,6 +357,27 @@ export default function FeedPage() {
     else           { el.pause(); setPaused(true); }
   }, [currentJob]);
 
+  // Long-press-to-reveal thumbnail strip: pauses the current video (reuses
+  // the existing `paused` state, not a second flag) before opening, since
+  // the strip's own thumbnails never autoplay and leaving the main video
+  // running behind it would be wasted decode/network for a view the user
+  // isn't looking at. jumpTo reuses setCurrent directly — the existing
+  // current-keyed play/pause effect above fires automatically for the new
+  // current video, so no special-case play logic is needed on jump.
+  const openThumbnailStrip = useCallback(() => {
+    if (currentJob) {
+      const el = videoRefs.current[currentJob.job_id];
+      el?.pause();
+      setPaused(true);
+    }
+    setStripOpen(true);
+  }, [currentJob]);
+
+  const jumpTo = useCallback((index: number) => {
+    setCurrent(index);
+    setStripOpen(false);
+  }, []);
+
   const goNext = useCallback(() => {
     setCurrent(c => {
       let next = c + 1;
@@ -305,16 +394,25 @@ export default function FeedPage() {
     });
   }, [items]);
 
-  // Keyboard navigation still works alongside swipe
+  // Keyboard navigation still works alongside swipe. Horizontal-swipe feed
+  // redesign: ArrowUp/ArrowDown dropped entirely (full replacement, no
+  // aliasing) in favor of ArrowRight/ArrowLeft matching the new swipe
+  // axis. Enter opens the thumbnail strip (its own keyboard-reachable
+  // equivalent of the long-press gesture, which has no natural keyboard
+  // analog); Escape closes it — both no-ops while the strip's own
+  // Escape/dialog handling isn't mounted, but harmless to check here too
+  // for the open case specifically.
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === "ArrowDown") goNext();
-      if (e.key === "ArrowUp")   goPrev();
-      if (e.key === " ")         { e.preventDefault(); togglePause(); }
+      if (stripOpen) return; // ThumbnailStrip owns its own Escape handling while open
+      if (e.key === "ArrowRight") goNext();
+      if (e.key === "ArrowLeft")  goPrev();
+      if (e.key === " ")          { e.preventDefault(); togglePause(); }
+      if (e.key === "Enter")      openThumbnailStrip();
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [goNext, goPrev, togglePause]);
+  }, [goNext, goPrev, togglePause, openThumbnailStrip, stripOpen]);
 
   function showToast(msg: string) {
     setToast(msg);
@@ -370,7 +468,12 @@ export default function FeedPage() {
         )}
 
         {/* Swipeable reel card */}
-        <SwipeCard onSwipeUp={goNext} onSwipeDown={goPrev} onClick={togglePause}>
+        <SwipeCard
+          onSwipeNext={goNext}
+          onSwipePrev={goPrev}
+          onTap={togglePause}
+          onLongPress={openThumbnailStrip}
+        >
           {/* Video */}
           {job.video_url ? (
             <video
@@ -399,20 +502,22 @@ export default function FeedPage() {
             </div>
           )}
 
-          {/* Swipe hint arrows — subtle, fade out after first swipe */}
+          {/* Swipe hint arrows — subtle, fade out after first swipe.
+              Horizontal-swipe feed redesign: repositioned from top/bottom
+              to left/right-center to match the new swipe axis. */}
           {!isFirst && (
             <div style={{
-              position: "absolute", top: "14px", left: "50%", transform: "translateX(-50%)",
+              position: "absolute", top: "50%", left: "14px", transform: "translateY(-50%)",
               color: "rgba(255,255,255,0.45)", fontSize: "18px", pointerEvents: "none",
               lineHeight: 1,
-            }}>↑</div>
+            }}>←</div>
           )}
           {!isLast && (
             <div style={{
-              position: "absolute", bottom: "14px", left: "50%", transform: "translateX(-50%)",
+              position: "absolute", top: "50%", right: "14px", transform: "translateY(-50%)",
               color: "rgba(255,255,255,0.45)", fontSize: "18px", pointerEvents: "none",
               lineHeight: 1,
-            }}>↓</div>
+            }}>→</div>
           )}
 
           {/* Bottom gradient + creator info */}
@@ -524,6 +629,15 @@ export default function FeedPage() {
       </div>
 
       {commenting && <CommentDrawer jobId={job.job_id} onClose={() => setCommenting(false)} />}
+
+      {stripOpen && (
+        <ThumbnailStrip
+          items={items}
+          currentIndex={current}
+          onJumpTo={jumpTo}
+          onClose={() => setStripOpen(false)}
+        />
+      )}
     </>
   );
 }
