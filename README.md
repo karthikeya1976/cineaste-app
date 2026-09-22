@@ -74,11 +74,15 @@ Content   (Sightengine) Content    Relevance
 | Route | Who | What |
 |-------|-----|------|
 | `/` | Anyone | Login / register |
-| `/feed` | Logged-in | Swipeable reel feed (swipe up/down, tap to pause) |
+| `/feed` | Logged-in | Horizontal-swipe reel feed — drag/flick left-right, tap to pause, long-press (3s) opens a jump-to-video thumbnail strip |
 | `/upload` | Creators | Upload a Scene (16:9) or Shot (9:16) for moderation |
 | `/profile` | Logged-in | Account card, creator upgrade, settings, logout |
 | `/search` | Logged-in | Debounced search for creators and videos |
 | `/creators/[id]` | Logged-in | Creator profile: stats, videos, Enroute/Deroute |
+| `/settings/privacy` | Logged-in | Blocked users list |
+| `/messages/conversations` | Logged-in | Messenger landing page — accepted chat threads |
+| `/messages/requests` | Logged-in | Incoming chat requests, including abusive-first-message banners |
+| `/messages/compose` | Logged-in | New chat: person search + compose |
 
 ---
 

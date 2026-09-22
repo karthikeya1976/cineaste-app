@@ -111,8 +111,26 @@
 - [x] `scripts/compare_baseline.py` + `generate_baseline.py`: JUnit-based regression diffing
 - [x] `scripts/review_bot.py`: decision logic — merges only if every required job is exactly `success`
 - [x] `scripts/spawn-agent-worktree.sh`: isolated git worktree + branch per agent/task, own npm/pip install
-- [ ] **Not yet applied**: `scripts/setup_branch_protection.sh` — branch protection is scripted but not run against the live repo (would block direct pushes to `main` for everyone, including solo maintainer — needs an explicit go-ahead)
+- [x] `scripts/setup_branch_protection.sh` applied to the live repo — `main` now requires the 3 PR-bot status checks before merge; direct `git push` to `main` is rejected (`GH006: Protected branch update failed`), confirmed firsthand during doc updates on 2026-09-22. All work since lands via PR + auto-merge.
 - [x] `BOT_PAT` repo secret configured (2026-09-11) — decision job can now comment/merge PRs
+
+## Messenger Channel Fixes (2026-09-19 – 2026-09-21) ✅
+- [x] Nav restructure: removed the New Message / Requests / Conversations tab bar; `/messages` redirects to `/messages/conversations` (default landing page), which gains a New Requests link with pending count and a New message button. Compose/search moved to `/messages/compose`.
+- [x] `nav-bar.tsx` Messages-link fallback (requests vs. conversations by badge state) re-scoped to the Messages item only — a prior version applied it to every nav item's `href`, which silently made Home/Search no-op while already on a `/messages/*` page (found and fixed via scripted browser repro, PR #27)
+- [x] Per-message timestamps and day separators in the thread view (`DaySeparator.tsx`, `lib/messageDayGroups.ts`)
+- [x] Message action menus: received messages get Copy/Reply/Report, sent get Edit/Reply/Copy (`MessageActionMenu.tsx`), each wired to a real action; menu trigger positioning fixed to render after the message bubble, not before (PR #25)
+- [x] Duplicate-channel prevention (`idx_chat_requests_one_pending` partial unique index, oracle-denial-preserving) — confirmed already correct on the backend, not rebuilt
+- [x] Abusive first-message handling changed from silent-drop to a visible `OffensiveBanner.tsx` in the recipient's requests inbox in place of the decrypted text — sender-side response stays non-distinguishing (oracle-denial preserved); the chat request row is now created (piggybacking on the existing `chat_requests.scan_verdict='abusive'` value) rather than dropped
+- [x] Blocked users list under Settings → Privacy (`/settings/privacy`, PR #26)
+- [x] Supporting pure-logic modules + tests: `lib/clipboard.ts`, `lib/messageSupersession.ts`, `lib/offensiveContent.ts`, `lib/pendingOutboundRequests.ts`
+
+## Feed Redesign: Horizontal Swipe + Long-Press Thumbnail Picker (2026-09-21 – 2026-09-22) ✅
+- [x] Full replacement of vertical swipe-up/down with horizontal swipe/flick — single-card index architecture (`current`/`items`) reused unchanged, only the gesture axis and animation are new (PR #28)
+- [x] Tap/swipe/long-press gesture classification extracted to pure, unit-tested `lib/gestureClassifier.ts` (no component-render harness in this repo — matches the `messageDayGroups.ts` precedent)
+- [x] Long-press (3s hold) opens `ThumbnailStrip.tsx` — windowed horizontal thumbnail strip (own `VideoThumbnail.tsx` pool, `<video preload="metadata" muted>`, never touching the main player) for jumping directly to any video; selecting one closes the strip
+- [x] Live drag-follow: card tracks the pointer 1:1 during drag (zero-transition), then animates a commit-and-exit or snap-back-to-center on release instead of an instant cut (PR #29)
+- [x] Velocity-based flick detection: a fast short drag advances even under the 40px distance threshold, tracked live move-to-move rather than at the final move-to-pointerup gap (which undercounts real flicks due to lift latency — found via real-browser timestamp logging, PR #30)
+- [x] All gesture/windowing logic verified via Vitest (`gestureClassifier.test.ts`, `feedItems.test.ts`) and real-browser Playwright checks (temporary installs, cleaned up after each PR)
 
 ## Pending / Future
 - [ ] Creator profile: list their approved videos inline
@@ -120,4 +138,3 @@
 - [ ] Saved videos (bookmark persisted to DB, not just local state)
 - [ ] CloudFormation UserData fully automated (no manual `pip install` step)
 - [ ] Remove `/debug/feed` and `/debug/search` endpoints before public launch
-- [ ] Apply branch protection (`scripts/setup_branch_protection.sh`) once a real PR has confirmed the bot merges successfully

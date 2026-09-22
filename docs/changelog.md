@@ -118,6 +118,60 @@
 - `scripts/spawn-agent-worktree.sh <task-id> <slug>`: creates an isolated `git worktree` + branch (`agent/<task-id>/<slug>`) with its own `npm ci` / venv install, so multiple agents can work on separate branches simultaneously without sharing a working directory or lockfile.
 - `scripts/setup_branch_protection.sh`: one-time (not yet run) script to make the 3 CI jobs required status checks on `main`, with `enforce_admins: true`. Not applied automatically — enabling it blocks direct pushes to `main` for everyone, including solo maintainers, so it needs an explicit decision to run.
 
-### Not yet done
+### Not yet done (as of 2026-09-10)
 - Branch protection is scripted but **not applied** to the live GitHub repo — run `sh scripts/setup_branch_protection.sh` when ready to require the bot's checks before merge.
 - `BOT_PAT` secret (fine-grained PAT scoped to `contents:write` + `pull-requests:write`) must be added to the repo's Actions secrets before the `decision` job can actually comment/merge.
+
+**Update:** both of the above are done. `BOT_PAT` was configured 2026-09-11; branch protection was applied at some point before 2026-09-19 (PRs #24 onward all required merging via `gh pr create` + auto-merge — a direct `git push` to `main` attempted during doc updates on 2026-09-22 was rejected with `GH006: Protected branch update failed for refs/heads/main... 3 of 3 required status checks are expected`, confirming it's live).
+
+## 2026-09-19 to 2026-09-21 — Messenger Channel Fixes
+
+Implemented `docs/plans/2026-09-18-001-feat-messenger-channel-fixes-plan.md`'s 8 units across this repo (frontend) and `gatekept` (backend, verified/confirmed only — no new backend code needed).
+
+### Nav restructure (U4)
+- Removed the New Message / Requests / Conversations tab bar (`MessagesNavTabs.tsx` deleted). `/messages` now redirects to `/messages/conversations`, the canonical landing page, which gained a "New Requests" link (with pending count) and a "New message" button.
+- Compose/search flow moved to its own route, `/messages/compose`, reachable from that button and the existing creator-profile "Message" deep link.
+- **Bug found and fixed (PR #27):** `nav-bar.tsx`'s Messages-specific href fallback (route to `/messages/requests` while the badge dot is visible, else `/messages/conversations`) was applied unconditionally to every nav item's `href`, not just the Messages item — Home and Search silently pointed at `/messages/conversations` too. From any `/messages/*` page, clicking Home or Search was a same-URL Link navigation (no-op), which looked like the nav had stopped responding. Diagnosed via a scripted Playwright repro (register, land on `/messages/conversations`, inspect the nav DOM) after static code reading wasn't conclusive; fixed by scoping the fallback to `item.href === "/messages"` without changing `item.href` itself (both the active-highlight prefix match and the badge-dot exact match still depend on it staying literally `"/messages"`).
+- **Bug found and fixed (PR #25):** the message action-menu trigger rendered before the message bubble instead of after it.
+
+### Timestamps and day separators (U5)
+- `components/DaySeparator.tsx` + `lib/messageDayGroups.ts` (pure grouping logic, unit-tested): the thread view now shows a per-message timestamp and a day-separator whenever the conversation crosses into a new calendar day.
+
+### Message action menus (U6)
+- `components/MessageActionMenu.tsx`: received messages get Copy/Reply/Report; sent messages get Edit/Reply/Copy. Each wired to a real action rather than a placeholder.
+- `lib/clipboard.ts` (new, tested): Copy action's clipboard helper.
+- `lib/messageSupersession.ts` (new, tested): resolves the Edit action's cryptographic constraint — message ciphertext is Double-Ratchet-bound to a specific `message_number`/session step, so an in-place ciphertext UPDATE would not decrypt correctly for a recipient who has already advanced past that step. Edits are modeled as a superseding message instead of a naive overwrite.
+
+### Duplicate-channel prevention (U8) — confirmed, not rebuilt
+- Verified the existing `idx_chat_requests_one_pending` Postgres partial unique index (scoped per `(sender_id, recipient_id)` pending pair) in the `gatekept` backend already fully prevents duplicate chat channels and blocks a second message before the recipient accepts, with oracle-denial-preserving behavior intact. No backend changes made — this was a confirm-and-wire-through-the-UI unit (`lib/pendingOutboundRequests.ts`, new, tested: disables Send on an already-pending outbound request), not a rebuild.
+
+### Abusive-first-message handling — security posture change (U7)
+- Previously: a first message that scored `abusive` on the moderation scan created **no** `chat_request` row at all, and the sender received an identical-looking fake success — a deliberate oracle-denial design (the sender can't distinguish "recipient declined" from "message was silently dropped for being abusive").
+- Now: an abusive-verdict first message **does** create a row (writing the already-existing-but-previously-unwritten `chat_requests.scan_verdict = 'abusive'` value), and the **recipient** sees `components/OffensiveBanner.tsx` in place of the decrypted text in their requests inbox instead of nothing arriving at all.
+- The sender-side response is unchanged and still non-distinguishing — only the recipient-side display changed. `lib/offensiveContent.ts` (new, tested) carries the recipient-side verdict-to-banner logic.
+
+### Testing
+- New pure-logic test files: `lib/clipboard.test.ts`, `lib/messageDayGroups.test.ts`, `lib/messageSupersession.test.ts`, `lib/offensiveContent.test.ts`, `lib/pendingOutboundRequests.test.ts` — following this repo's existing precedent of extracting testable logic out of components that have no render-test harness.
+
+## 2026-09-21 to 2026-09-22 — Feed Redesign: Horizontal Swipe + Long-Press Thumbnail Picker
+
+Full replacement of the feed's vertical swipe-up/down gesture model with horizontal swipe, plus a new long-press-to-reveal thumbnail picker for jumping directly between videos. No dual-mode/flag — this is the only gesture model now. No backend changes: thumbnails render as `<video preload="metadata" muted>` elements rather than requiring a new `thumbnail_url` field, which also sidesteps canvas/CORS complications with the S3-presigned `video_url`.
+
+### Core redesign (#28)
+- The feed's existing single-card, index-based architecture (`current: number` into a flat `items` array, only one `<video>` ever mounted/playing) was reused unchanged — this was an axis flip and a new interaction layered on top, not a rewrite.
+- `lib/gestureClassifier.ts` (new, unit-tested): pure tap/swipe/long-press decision logic extracted out of `SwipeCard`'s pointer-event handlers, matching this repo's `messageDayGroups.ts`-style precedent for testable logic without a component-render harness. `MOVE_TOLERANCE` (10px), `SWIPE_THRESHOLD` (40px), `LONG_PRESS_MS` (3000ms).
+- `lib/feedItems.ts` (new, unit-tested): `SectionDivider`/`FeedItem`/`isDivider` hoisted out of `page.tsx`, plus `computeVisibleWindow` — pure-arithmetic windowing (`scrollLeft / itemWidth`) for the thumbnail strip, deliberately avoiding both a virtualization library and per-item `getBoundingClientRect()` measurement given realistic feed sizes (dozens of items, not thousands).
+- `components/ThumbnailStrip.tsx` + `components/VideoThumbnail.tsx` (new): the long-press-revealed picker. Renders the same full flat `items` order (not a creator-only subset); dividers render as non-interactive label chips. Only mounts live `<video>` elements within a windowed range around the scroll-derived center index — a separate pool from the main player's `videoRefs`. Scroll-to-center on open respects `prefers-reduced-motion` (first use of that media query in this codebase, scoped only here). Dismiss via tap-outside, swipe-down, or Escape; selecting a thumbnail auto-closes the strip.
+- Long-press pauses the current video (reuses the existing `paused` state) before opening the strip, rather than leaving it playing behind a scrim.
+- `onPointerCancel` handling added to `SwipeCard` — a real gap in the original vertical-swipe implementation (no cancel/leave handler at all), now load-bearing since a 3-second hold gives an OS gesture or browser chrome much more opportunity to steal the pointer mid-gesture than the old sub-second swipe did.
+- Keyboard remapped: `ArrowUp`/`ArrowDown` dropped entirely in favor of `ArrowRight`/`ArrowLeft` (no aliasing); `Enter` opens the thumbnail strip, `Escape` closes it.
+
+### Live drag-follow + snap animation (#29)
+- The card previously had no visual feedback during a drag and cut instantly to the next/prev video on release. Now: the card translates 1:1 with the pointer during drag (zero-transition), then on release either animates fully off-screen in the swipe direction before the navigation callback fires (`COMMIT_MS`, 200ms) or eases back to center (`SNAP_BACK_MS`, 220ms) instead of an instant snap.
+- New gestures are ignored while a commit/snap-back animation is still resolving, preventing overlapping animations or double-navigation from a rapid second swipe. Same Pointer Events handlers drive both mouse and touch.
+- Verified via Playwright against a stubbed feed response.
+
+### Velocity-based flick detection (#30)
+- A fast, short flick now advances the feed even under the 40px `SWIPE_THRESHOLD` — `classifyPointerUp()` gained an optional `velocityX`; when the distance check doesn't qualify, a horizontal-dominant release past `FLICK_VELOCITY_THRESHOLD` (0.5px/ms) also resolves to swipe, using velocity's sign for direction rather than `dx`'s.
+- **Bug found and fixed during implementation:** the first version computed release velocity from the last `pointermove` to `pointerup`, which systematically undercounted real flicks — real-browser testing (Playwright + raw pointer-event timestamp logging) showed the pointer typically sits still for 15-40ms between the last move and the actual lift (event coalescing/lift latency), zeroing out the velocity of a genuinely fast flick. Fixed by tracking velocity live, move-to-move, during `pointermove`, and reading that value at release instead of recomputing against the up-event's own late timestamp.
+- 8 new test cases in `gestureClassifier.test.ts` cover the flick path; all 159 frontend tests pass (151 pre-existing + 8 new).
