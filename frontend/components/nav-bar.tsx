@@ -219,12 +219,16 @@ export default function NavBar() {
                 {item.icon}
                 {/* Unread-indicator dot — binary presence/absence only, per
                     the plan's Notification UI subsection: "a small solid
-                    dot, var(--accent), positioned top-right of the existing
-                    MessageCircle icon, visible in both the nav's collapsed
-                    (56px) and hover-expanded (208px) states." Anchored to
-                    the icon span itself (not the label, which fades
-                    in/out between states) so it stays visibly correct in
-                    both. */}
+                    dot, positioned top-right of the existing MessageCircle
+                    icon, visible in both the nav's collapsed (56px) and
+                    hover-expanded (208px) states." Anchored to the icon
+                    span itself (not the label, which fades in/out between
+                    states) so it stays visibly correct in both.
+                    Uses var(--notify) (red), not var(--accent) — the
+                    cream-theme redesign carves notification/unread
+                    indicators out as their own semantic color, distinct
+                    from the blue interactive/brand accent used everywhere
+                    else (active nav highlight, buttons, links). */}
                 {item.href === "/messages" && navDotVisible && (
                   <span
                     aria-label="Unread messages"
@@ -235,7 +239,7 @@ export default function NavBar() {
                       width: "8px",
                       height: "8px",
                       borderRadius: "50%",
-                      background: "var(--accent)",
+                      background: "var(--notify)",
                       border: "1.5px solid var(--surface)",
                     }}
                   />

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { upgradeToCreator } from "@/lib/api";
@@ -25,9 +25,46 @@ const inputStyle: React.CSSProperties = {
 
 export default function ProfilePage() {
   const router = useRouter();
-  // getUser() is synchronous (reads localStorage) — compute the initial
-  // value lazily instead of via setState-in-effect, avoiding an extra render.
-  const [user, setUser]           = useState<AuthUser | null>(getUser);
+  // getUser() reads localStorage, which doesn't exist during SSR. The
+  // original approach here — useState(getUser) as a lazy initializer —
+  // avoided an extra render, but ran getUser() during the render itself,
+  // so the server always rendered as logged-out (user: null) while the
+  // client's very first render saw the real, already-logged-in user. That
+  // mismatch is React's hydration error #418 (https://react.dev/errors/418)
+  // — confirmed via testing (present with this pattern, absent without it).
+  //
+  // Fix: useSyncExternalStore, same technique nav-bar.tsx already uses for
+  // the identical bug — its getServerSnapshot always returns the SSR-safe
+  // default (null), so the initial client render matches the server
+  // exactly; the real value only takes effect on the next tick, as an
+  // ordinary post-hydration update rather than a mismatch, and without a
+  // bare setState-in-effect (this repo's lint blocks that pattern — see
+  // the CI changelog entry that already eliminated it project-wide).
+  //
+  // This ONLY works because getUser() (lib/auth.ts) was changed alongside
+  // this fix to cache its result by reference — useSyncExternalStore
+  // requires getSnapshot to return a referentially-stable (===) value
+  // when nothing actually changed, and getUser()'s original
+  // JSON.parse-every-call implementation returned a new object every
+  // single call, which read as "changed every render" and caused a real
+  // infinite-render-loop crash ("Maximum update depth exceeded"),
+  // confirmed via testing before the auth.ts fix. Do not swap getUser()
+  // back to a non-memoized implementation without re-checking this.
+  //
+  // No separate useState for `user` — tried that (twice), both attempts
+  // broke: (1) a lazy initializer only seeds once at true mount, so it
+  // never picks up the real value after hydration; (2) a sync-into-state
+  // effect (even guarded by an inequality check) still trips this repo's
+  // react-hooks/set-state-in-effect lint rule, which flags ANY
+  // synchronous setState call inside an effect body, guarded or not.
+  // `syncedUser` is used directly everywhere instead — after
+  // handleUpgrade's setAuth() call, the setSuccess/setUpgrading calls
+  // that follow it in the same handler already trigger a re-render, and
+  // useSyncExternalStore re-evaluates getSnapshot (getUser) on every
+  // render regardless of what triggered it, so the upgraded user shows up
+  // immediately with no extra state or explicit re-read needed.
+  const noopSubscribe = () => () => {};
+  const user = useSyncExternalStore(noopSubscribe, getUser, () => null);
   const [department, setDepartment] = useState(DEPARTMENTS[0]);
   const [upgrading, setUpgrading] = useState(false);
   const [error, setError]         = useState("");
@@ -51,10 +88,41 @@ export default function ProfilePage() {
   const [pushBusy, setPushBusy] = useState(false);
   const [pushError, setPushError] = useState("");
 
-  // Redirecting is a real side effect (navigation), so it stays in an effect —
-  // only the state read above moved out.
+  // Redirecting is a real side effect (navigation), so it stays in an
+  // effect — only the state read above moved out. Delayed by one
+  // setTimeout(0) tick rather than checked immediately: `user`
+  // (useSyncExternalStore, above) can render as null for a render or two
+  // immediately after hydration before settling on the real value —
+  // confirmed via direct instrumentation (logging on every check showed
+  // null, then the real user, both within the SAME effect-commit flush —
+  // a ref-based "have we mounted" flag does NOT help here, tried and
+  // confirmed still broken, because the flag is already true by the time
+  // this very first check runs; there is no separate "mounted" moment to
+  // gate on that arrives before user resolves). Apparently React 19
+  // Strict Mode's intentional dev-mode double-invoke (mount → simulated
+  // unmount → remount) racing against this specific external-store read.
+  // That's invisible for something like nav-bar.tsx's use of the same
+  // useSyncExternalStore technique (it only changes what renders, which
+  // is naturally idempotent across those extra renders), but genuinely
+  // broke here: this effect performs navigation, a real side effect that
+  // does NOT undo itself once a later render disagrees — checking
+  // immediately fired on the transient null and the app was already
+  // mid-navigation (to "/", which itself immediately redirects an
+  // already-logged-in visitor to "/feed" — see app/page.tsx) by the time
+  // the real user value arrived.
+  //
+  // A macrotask (setTimeout) defers the check past the synchronous
+  // render-and-effect-flush sequence entirely, onto its own event-loop
+  // turn — by then, React has settled on user's real, stable value
+  // (confirmed via testing: the timeout callback below reads the correct
+  // final value on every run). The timer is cleared on cleanup so a
+  // fast unmount (navigating away before the timeout fires) can't still
+  // redirect afterward.
   useEffect(() => {
-    if (!user) router.replace("/");
+    const timer = setTimeout(() => {
+      if (!user) router.replace("/");
+    }, 0);
+    return () => clearTimeout(timer);
   }, [user, router]);
 
   useEffect(() => {
@@ -114,7 +182,11 @@ export default function ProfilePage() {
         email: updated.email ?? user?.email ?? "",
         account_type: updated.account_type, department: updated.department,
       });
-      setUser(getUser());
+      // No setUser(getUser()) call needed here — `user` is derived
+      // directly from useSyncExternalStore now (see its own comment
+      // above); the setSuccess/setUpgrading state changes below already
+      // trigger a re-render, which re-evaluates the synced snapshot and
+      // picks up this setAuth() write automatically.
       setSuccess("Upgraded to Creator! You can now upload showreels.");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Upgrade failed");
