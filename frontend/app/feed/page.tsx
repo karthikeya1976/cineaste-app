@@ -653,9 +653,30 @@ export default function FeedPage() {
             }}>→</div>
           )}
 
-          {/* Bottom gradient + creator info */}
+          {/* Bottom gradient + creator info.
+              right was previously "64px" (deliberately carved out short of
+              the card's right edge, apparently to avoid visually/
+              structurally overlapping the action-button column below) —
+              but that cutout served no real functional purpose: this div
+              is pointerEvents: "none" at its root already (only its
+              interactive children opt back in individually via
+              pointerEvents: "all"), so it was never intercepting clicks
+              meant for the buttons regardless of its width. The cutout's
+              real, visible effect was a hard seam in the video's
+              brightness/tint exactly 64px from the right edge — the left
+              portion of the bottom band sat under the 80%-black gradient,
+              the rightmost 64px strip (directly behind the action buttons)
+              did not, and that abrupt boundary read as a distinct
+              rectangular "layer" of different color sitting on the video
+              (reported by a user, confirmed via real-production-screenshot
+              testing + exact element-geometry measurement — the gap was
+              precisely 64px, matching this literal). Extending to the
+              full width removes the seam and, as a side benefit, gives
+              the action-button icons/labels (see ICON_SHADOW /
+              ActionBtn above) a consistently darkened background instead
+              of sitting directly on raw, unmodified video pixels. */}
           <div style={{
-            position: "absolute", bottom: 0, left: 0, right: "64px",
+            position: "absolute", bottom: 0, left: 0, right: 0,
             padding: "60px 14px 16px",
             background: "linear-gradient(to top, rgba(0,0,0,0.8) 0%, transparent 100%)",
             pointerEvents: "none",
