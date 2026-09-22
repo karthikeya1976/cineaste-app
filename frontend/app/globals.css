@@ -1,14 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --bg:        #0a0a0f;   /* near-black background */
-  --surface:   #13131a;   /* cards / panels */
-  --border:    #1e1e2e;   /* subtle borders */
-  --fg:        #e8e8f0;   /* primary text */
-  --fg-muted:  #6b6b80;   /* secondary text */
-  --accent:    #4169e1;   /* selenium blue */
-  --accent-dim:#2a47b0;   /* darker accent for hover */
-  --accent-bg: #4169e115; /* very faint accent tint for highlights */
+  --bg:        #f5f0e6;   /* light cream page background */
+  --surface:   #faf6ec;   /* lighter cream — cards/panels stand out from bg */
+  --border:    #ded4bd;   /* warm tan border, visible against both creams */
+  --fg:        #000000;   /* primary text — pure black */
+  --fg-muted:  #5c5648;   /* secondary text — dark warm grey, keeps hierarchy vs. pure-black primary */
+  --accent:    #4169e1;   /* selenium blue — unchanged, still the interactive/brand color */
+  --accent-dim:#2a47b0;   /* darker accent for hover — unchanged */
+  --accent-bg: #4169e115; /* very faint accent tint for highlights — unchanged */
+  --notify:    #dc2626;   /* red — unread/notification indicators only (e.g. the nav badge dot) */
 }
 
 body {
