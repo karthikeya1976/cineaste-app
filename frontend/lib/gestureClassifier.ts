@@ -19,13 +19,27 @@
 //     original vertical-only feed: with horizontal swipe as the primary
 //     gesture, an accidental vertical scroll attempt must not be
 //     misread as a swipe.
+//   - Released while dragging, UNDER SWIPE_THRESHOLD but with the release
+//     velocity past FLICK_VELOCITY_THRESHOLD (and horizontal-dominant) ->
+//     also swipe next/prev. A fast short flick reads as an intentional
+//     swipe even if the finger didn't travel the full 40px — matches
+//     native carousel/reel feel, where speed matters as much as distance.
+//     Velocity is the *instantaneous* rate at release (last pointermove
+//     sample to pointerup), not an average over the whole gesture, so a
+//     drag that starts fast then pauses before release does NOT count as
+//     a flick — the user visibly stopped, so distance alone should decide.
 //   - Released with no meaningful movement -> tap.
-//   - Released while dragging but under SWIPE_THRESHOLD -> cancelled
-//     (snap back), neither a tap nor a swipe.
+//   - Released while dragging but under both SWIPE_THRESHOLD and the flick
+//     velocity check -> cancelled (snap back), neither a tap nor a swipe.
 
 export const MOVE_TOLERANCE = 10;
 export const SWIPE_THRESHOLD = 40;
 export const LONG_PRESS_MS = 3000;
+// px/ms. ~0.5 is a brisk flick (e.g. 40px in ~80ms) — fast enough that a
+// deliberate slow drag well under SWIPE_THRESHOLD won't accidentally
+// qualify, but low enough to catch a real quick flick that only travels
+// 15-20px before release.
+export const FLICK_VELOCITY_THRESHOLD = 0.5;
 
 export type GestureResult =
   | { type: "tap" }
@@ -51,12 +65,18 @@ export function shouldCancelLongPress(dx: number, dy: number): boolean {
  * pointer-up? When true, this always resolves to "long-press" regardless
  * of dx/dy — the strip is already open and pointer-up is a no-op for
  * navigation purposes.
+ * `velocityX` — optional, instantaneous horizontal px/ms at release (signed
+ * the same way as dx: negative = moving left/"next"). Omitted or 0 simply
+ * disables the flick path, falling back to distance-only classification —
+ * every pre-existing call site that doesn't pass it keeps its original
+ * behavior unchanged.
  */
 export function classifyPointerUp(input: {
   dx: number;
   dy: number;
   everDragged: boolean;
   longPressFired: boolean;
+  velocityX?: number;
 }): GestureResult {
   if (input.longPressFired) {
     return { type: "long-press" };
@@ -68,9 +88,15 @@ export function classifyPointerUp(input: {
 
   const absDx = Math.abs(input.dx);
   const absDy = Math.abs(input.dy);
+  const horizontalDominant = absDx > absDy;
 
-  if (absDx > SWIPE_THRESHOLD && absDx > absDy) {
+  if (absDx > SWIPE_THRESHOLD && horizontalDominant) {
     return { type: "swipe", direction: input.dx < 0 ? "next" : "prev" };
+  }
+
+  const absVelocity = Math.abs(input.velocityX ?? 0);
+  if (horizontalDominant && absVelocity > FLICK_VELOCITY_THRESHOLD) {
+    return { type: "swipe", direction: (input.velocityX ?? 0) < 0 ? "next" : "prev" };
   }
 
   return { type: "cancelled" };
