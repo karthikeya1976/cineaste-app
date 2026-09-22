@@ -244,9 +244,9 @@ export default function SearchPage() {
 
                 <span style={{
                   fontSize: "11px", fontWeight: 600, padding: "3px 10px", borderRadius: "999px", flexShrink: 0,
-                  background: v.overall_status === "approved" ? "#4169e122" : "#b4550022",
-                  color: v.overall_status === "approved" ? "#7ba3ff" : "#fb923c",
-                  border: `1px solid ${v.overall_status === "approved" ? "#4169e144" : "#b4550044"}`,
+                  background: v.overall_status === "approved" ? "#c2542322" : "#b4550022",
+                  color: v.overall_status === "approved" ? "#e08a5f" : "#fb923c",
+                  border: `1px solid ${v.overall_status === "approved" ? "#c2542344" : "#b4550044"}`,
                 }}>
                   {v.overall_status}
                 </span>

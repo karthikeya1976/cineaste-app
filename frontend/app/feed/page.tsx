@@ -41,8 +41,8 @@ function IconShare() {
 
 function IconBookmark({ filled }: { filled: boolean }) {
   return (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill={filled ? "#7ba3ff" : "none"}
-      stroke={filled ? "#7ba3ff" : "#fff"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill={filled ? "#e08a5f" : "none"}
+      stroke={filled ? "#e08a5f" : "#fff"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
     </svg>
   );

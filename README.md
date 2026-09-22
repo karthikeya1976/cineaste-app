@@ -58,7 +58,7 @@ Content   (Sightengine) Content    Relevance
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | Next.js 16, React 19, Tailwind CSS (dark theme, selenium blue) |
+| Frontend | Next.js 16, React 19, Tailwind CSS (light cream theme, peach accent) |
 | API Gateway | FastAPI + Uvicorn |
 | Task Queue | Celery + Redis (ElastiCache) |
 | Storage | AWS S3 (video files + extracted frames) |
