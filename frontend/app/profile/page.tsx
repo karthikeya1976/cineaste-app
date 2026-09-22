@@ -4,7 +4,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { upgradeToCreator } from "@/lib/api";
-import { getUser, setAuth, getToken, clearAuth, type AuthUser } from "@/lib/auth";
+import { getUser, setAuth, getToken, clearAuth } from "@/lib/auth";
 import {
   isPushSupported,
   getExistingPushSubscription,

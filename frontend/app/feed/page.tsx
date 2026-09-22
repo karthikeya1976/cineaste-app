@@ -9,9 +9,23 @@ import { classifyPointerUp, shouldCancelLongPress, LONG_PRESS_MS } from "@/lib/g
 import { ThumbnailStrip } from "@/components/ThumbnailStrip";
 
 /* ── SVG icon components ─────────────────────────────────────────────────── */
+// Right-side action button icons/labels sit directly on top of the playing
+// video with no background chip behind them (an intentional, minimal reel-
+// UI look — see ActionBtn below). Without their own contrast anchor, a
+// light or busy video frame can wash a plain white icon/label out almost to
+// invisibility (confirmed via real-video screenshot testing — reported by
+// a user as the buttons "forming a transparent layer" on the video).
+// ICON_SHADOW is a drop-shadow filter (the correct CSS property for raw SVG
+// shapes — box-shadow/text-shadow don't apply to SVG strokes/fills) that
+// keeps a consistent dark halo around every icon regardless of what's
+// behind it, matching the existing textShadow pattern this same file
+// already uses for the creator-name/department text over the video
+// (see the "Bottom gradient + creator info" block below).
+const ICON_SHADOW = "drop-shadow(0 1px 3px rgba(0,0,0,0.85))";
+
 function IconStar({ filled }: { filled: boolean }) {
   return (
-    <svg width="28" height="28" viewBox="0 0 24 24"
+    <svg width="28" height="28" viewBox="0 0 24 24" style={{ filter: ICON_SHADOW }}
       fill={filled ? "#fbbf24" : "none"}
       stroke={filled ? "#fbbf24" : "#fff"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
@@ -21,7 +35,7 @@ function IconStar({ filled }: { filled: boolean }) {
 
 function IconComment() {
   return (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+    <svg width="28" height="28" viewBox="0 0 24 24" style={{ filter: ICON_SHADOW }} fill="none"
       stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
     </svg>
@@ -30,7 +44,7 @@ function IconComment() {
 
 function IconShare() {
   return (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+    <svg width="28" height="28" viewBox="0 0 24 24" style={{ filter: ICON_SHADOW }} fill="none"
       stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
       <polyline points="16 6 12 2 8 6" />
@@ -41,7 +55,8 @@ function IconShare() {
 
 function IconBookmark({ filled }: { filled: boolean }) {
   return (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill={filled ? "#e08a5f" : "none"}
+    <svg width="28" height="28" viewBox="0 0 24 24" style={{ filter: ICON_SHADOW }}
+      fill={filled ? "#e08a5f" : "none"}
       stroke={filled ? "#e08a5f" : "#fff"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
     </svg>
@@ -49,8 +64,8 @@ function IconBookmark({ filled }: { filled: boolean }) {
 }
 
 /* ── Action button wrapper ───────────────────────────────────────────────── */
-function ActionBtn({ onClick, icon, label, active }: {
-  onClick: () => void; icon: React.ReactNode; label: string; active?: boolean;
+function ActionBtn({ onClick, icon, label }: {
+  onClick: () => void; icon: React.ReactNode; label: string;
 }) {
   return (
     <button
@@ -66,7 +81,25 @@ function ActionBtn({ onClick, icon, label, active }: {
       onMouseLeave={e => (e.currentTarget.style.transform = "scale(1)")}
     >
       {icon}
-      <span style={{ fontSize: "11px", color: active ? undefined : "rgba(255,255,255,0.75)", fontWeight: 600 }}>
+      {/* Always fully opaque white + the same textShadow this file already
+          uses for the creator-name/department text over video — unconditional
+          now, not gated on `active`. The prior version left color/shadow
+          undefined in the active case (star credited / bookmark saved),
+          which fell through to the page's inherited text color; that was a
+          harmless coincidence under the old dark theme (inherited color
+          happened to be near-white) but broke silently once the app moved
+          to the cream theme (inherited color is now black — black text
+          with no shadow directly on a video has exactly the same
+          washed-out/illegible problem being fixed here, just inverted).
+          The icon's own fill color (e.g. amber star, peach bookmark) is
+          what visually communicates "active," not the label — the label
+          only needs to stay legible, in every state, against any video
+          frame. */}
+      <span style={{
+        fontSize: "11px", fontWeight: 600,
+        color: "#fff",
+        textShadow: "0 1px 4px rgba(0,0,0,0.8)",
+      }}>
         {label}
       </span>
     </button>
@@ -699,7 +732,6 @@ export default function FeedPage() {
               }}
               icon={<IconStar filled={!!credited[job.job_id]} />}
               label={String(creditCounts[job.job_id] ?? 0)}
-              active={!!credited[job.job_id]}
             />
             <ActionBtn onClick={() => setCommenting(true)} icon={<IconComment />} label="Comment" />
             <ActionBtn onClick={handleShare} icon={<IconShare />} label="Share" />
@@ -707,7 +739,6 @@ export default function FeedPage() {
               onClick={() => setSaved(s => ({ ...s, [job.job_id]: !s[job.job_id] }))}
               icon={<IconBookmark filled={!!saved[job.job_id]} />}
               label="Save"
-              active={!!saved[job.job_id]}
             />
           </div>
 
