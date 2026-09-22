@@ -168,6 +168,17 @@ function CommentDrawer({ jobId, onClose }: { jobId: string; onClose: () => void 
 // full disambiguation rationale (why movement permanently cancels a
 // pending long-press rather than re-arming, why the axis-dominance check
 // on swipe direction matters now that swipe is horizontal, etc).
+// Live drag-follow: while dragging, the card translates horizontally with
+// the pointer 1:1; on release it either commits (animates the rest of the
+// way off-screen, then fires the nav callback) or snaps back to center.
+// SNAP_BACK_MS/COMMIT_MS are separate from gestureClassifier.ts's constants
+// deliberately — those govern gesture *recognition* (when is this a swipe),
+// these govern animation *timing* (how the visual settles once recognized),
+// and conflating them would make future tuning of one silently affect the
+// other.
+const SNAP_BACK_MS = 220;
+const COMMIT_MS = 200;
+
 function SwipeCard({
   children,
   onSwipeNext,
@@ -187,6 +198,16 @@ function SwipeCard({
   const longPressTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFired  = useRef(false);
 
+  // Live drag offset (px). Plain state, not a ref: it drives the visible
+  // transform every frame, unlike the other gesture bookkeeping above which
+  // never needs to trigger a render. containerWidthRef caches the card's
+  // own width at drag-start so a "swipe" commit can animate a full
+  // off-screen exit without a synchronous layout read on every pointermove.
+  const [dragX, setDragX] = useState(0);
+  const [phase, setPhase] = useState<"idle" | "dragging" | "settling">("idle");
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const containerWidthRef = useRef(0);
+
   function clearLongPressTimer() {
     if (longPressTimer.current !== null) {
       clearTimeout(longPressTimer.current);
@@ -203,10 +224,12 @@ function SwipeCard({
   }
 
   function onPointerDown(e: React.PointerEvent) {
+    if (phase === "settling") return; // ignore new gestures until the current commit/snap-back animation finishes
     startY.current = e.clientY;
     startX.current = e.clientX;
     everDragged.current = false;
     longPressFired.current = false;
+    containerWidthRef.current = containerRef.current?.getBoundingClientRect().width ?? 0;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 
     clearLongPressTimer();
@@ -228,6 +251,23 @@ function SwipeCard({
       // goes still again mid-drag.
       clearLongPressTimer();
     }
+    if (everDragged.current) {
+      setPhase("dragging");
+      setDragX(dx);
+    }
+  }
+
+  function settleTo(target: number, andThen?: () => void) {
+    setPhase("settling");
+    setDragX(target);
+    const ms = target === 0 ? SNAP_BACK_MS : COMMIT_MS;
+    window.setTimeout(() => {
+      andThen?.();
+      // Reset with transitions off (phase "idle") so the incoming card
+      // doesn't inherit an outgoing slide animation from x=±exit back to 0.
+      setPhase("idle");
+      setDragX(0);
+    }, ms);
   }
 
   function onPointerUp(e: React.PointerEvent) {
@@ -245,18 +285,27 @@ function SwipeCard({
       longPressFired: longPressFired.current,
     });
 
+    const exitDistance = containerWidthRef.current || 380;
+
     switch (result.type) {
-      case "swipe":
-        if (result.direction === "next") onSwipeNext();
-        else onSwipePrev();
+      case "swipe": {
+        const exitX = result.direction === "next" ? -exitDistance : exitDistance;
+        settleTo(exitX, result.direction === "next" ? onSwipeNext : onSwipePrev);
         break;
+      }
       case "tap":
+        settleTo(0);
         onTap();
         break;
       case "long-press":
+        // Strip already opened via the timer callback. If the drag tolerance
+        // was somehow also crossed first this resolves to long-press
+        // regardless (see classifyPointerUp) — still snap the card back so
+        // it isn't left visually offset behind the strip.
+        settleTo(0);
+        break;
       case "cancelled":
-        // long-press: strip already opened via the timer callback, nothing
-        // further to do here. cancelled: sub-threshold drag, snap back.
+        settleTo(0); // sub-threshold drag — snap back to center
         break;
     }
 
@@ -268,12 +317,16 @@ function SwipeCard({
     // handler at all — low-risk for a 40px-threshold sub-second swipe, but
     // a 3-second hold has a much longer window for something (an OS
     // gesture, browser chrome) to steal the pointer. Must not leave a
-    // dangling timer that fires the strip open after the user has moved on.
+    // dangling timer that fires the strip open after the user has moved on,
+    // and must not leave the card visually dragged-out with nothing to
+    // resolve it.
+    if (everDragged.current) settleTo(0);
     resetGestureRefs();
   }
 
   return (
     <div
+      ref={containerRef}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -291,7 +344,12 @@ function SwipeCard({
         userSelect: "none",
         WebkitUserSelect: "none",
         WebkitTouchCallout: "none", // suppress iOS Safari's native long-press callout
-        cursor: "grab",
+        cursor: phase === "dragging" ? "grabbing" : "grab",
+        transform: dragX !== 0 ? `translateX(${dragX}px)` : undefined,
+        // No transition while actively dragging (phase "dragging") — the
+        // transform must track the pointer 1:1 with zero lag. Only the
+        // release-triggered settle (phase "settling") animates.
+        transition: phase === "settling" ? `transform ${dragX === 0 ? SNAP_BACK_MS : COMMIT_MS}ms ease-out` : "none",
       }}
     >
       {children}
