@@ -182,14 +182,23 @@ Returns `{overall_status, reasons}` written back to the DB row.
 | Route | File | Description |
 |-------|------|-------------|
 | `/` | `app/page.tsx` | Login / register with JWT storage |
-| `/feed` | `app/feed/page.tsx` | Swipeable reel feed — swipe up/down or keyboard ↑↓ |
+| `/feed` | `app/feed/page.tsx` | Horizontal-swipe reel feed — drag/flick left-right or ← → keys; long-press (3s) opens a thumbnail strip to jump directly to any video |
 | `/upload` | `app/upload/page.tsx` | Scene (16:9) or Shot (9:16) upload with format toggle |
 | `/profile` | `app/profile/page.tsx` | Account info, creator upgrade, settings, logout |
 | `/search` | `app/search/page.tsx` | Debounced creator + video search |
 | `/creators/[id]` | `app/creators/[id]/page.tsx` | Creator profile with stats and Enroute/Deroute |
+| `/settings/privacy` | `app/settings/privacy/page.tsx` | Blocked users list — unblock removes a person from the list without restoring any prior conversation |
+| `/messages/conversations` | `app/messages/conversations/page.tsx` | Default landing page for the messenger — accepted chat threads |
+| `/messages/requests` | `app/messages/requests/page.tsx` | Incoming chat requests awaiting accept/decline, including abusive-first-message banners in place of the decrypted text |
+| `/messages/compose` | `app/messages/compose/page.tsx` | Person search + new-chat compose flow, reached via the Conversations page's "New message" button or a creator profile's Message button |
+| `/messages/conversations/[conversationId]` | `app/messages/conversations/[conversationId]/page.tsx` | Thread view — per-message timestamps, day separators, and Copy/Reply/Report (received) or Edit/Reply/Copy (sent) action menus |
+
+`/messages` itself redirects to `/messages/conversations` — there is no longer a standalone tab bar switching between New Message / Requests / Conversations views (removed in favor of landing directly on Conversations, with Requests reachable via a link and a pending-count badge).
 
 **Shared components**
-- `components/nav-bar.tsx` — collapsible sidebar: "EC" monogram collapsed, "Editor Club" expanded; Home, Search, Upload (creator only), Profile (pinned bottom)
+- `components/nav-bar.tsx` — collapsible sidebar: "EC" monogram collapsed, "Editor Club" expanded; Home, Search, Messages (badge dot for pending requests/unread), Upload (creator only), Profile (pinned bottom). The Messages link routes to `/messages/requests` while the badge is visible, `/messages/conversations` otherwise — scoped only to the Messages item, since a past regression once let this fallback apply to every nav item's `href`.
+- `components/MessageActionMenu.tsx`, `components/DaySeparator.tsx`, `components/OffensiveBanner.tsx` — thread-view building blocks for U5/U6/U7 of the messenger channel fixes (see Feed Gestures and the changelog for the full list)
+- `components/ThumbnailStrip.tsx`, `components/VideoThumbnail.tsx` — the feed's long-press jump-to-video picker (see Feed Gestures below)
 
 **Libraries**
 - `lib/api.ts` — typed wrapper for every backend endpoint; all calls use `/api/backend` prefix (same-origin proxy)
@@ -219,6 +228,42 @@ Frontend merges with section dividers:
   [Recommended]   ← recommended bucket (if non-empty)
   video, video, …
 ```
+
+---
+
+## Feed Gestures
+
+The feed is a single-card, index-based interface (`current: number` into the
+flat `items` array above) — only one `<video>` is ever mounted/playing at a
+time. All gesture handling is hand-rolled on top of Pointer Events in
+`SwipeCard` (`app/feed/page.tsx`); no gesture/animation/carousel library is
+used. Tap, swipe, and long-press share one `onPointerDown` origin and are
+disambiguated in `frontend/lib/gestureClassifier.ts` (pure, unit-tested
+logic — `classifyPointerUp`, `shouldCancelLongPress`):
+
+- **Tap** — pointer released with no meaningful movement → toggles pause.
+- **Swipe** — horizontal drag past `SWIPE_THRESHOLD` (40px), with the
+  horizontal delta dominant over the vertical one (an accidental vertical
+  scroll attempt must not misfire as a swipe) → advances/retreats `current`.
+- **Flick** — a fast short drag that never reaches `SWIPE_THRESHOLD` still
+  swipes if its release velocity exceeds `FLICK_VELOCITY_THRESHOLD`
+  (0.5px/ms), matching native carousel feel where speed matters as much as
+  distance. Velocity is tracked live during `pointermove`, computed
+  move-to-move rather than from the last move to `pointerup` — the pointer
+  typically sits still for 15-40ms between the last move and the actual
+  lift, and measuring over that trailing gap undercounts real flicks.
+- **Long-press** — held below the movement tolerance for `LONG_PRESS_MS`
+  (3000ms) → pauses the current video and opens `ThumbnailStrip`, a
+  windowed horizontally-scrollable strip (own pool of `<video preload=
+  "metadata" muted>` elements, never touching the main player's) for
+  jumping directly to any video in the feed. Selecting a thumbnail calls
+  `setCurrent` directly and closes the strip.
+
+On release past the swipe/flick threshold, the card animates fully
+off-screen (`COMMIT_MS`, 200ms) before the navigation callback fires; below
+threshold, it eases back to center (`SNAP_BACK_MS`, 220ms) instead of
+snapping instantly. Both mouse and touch are driven by the same Pointer
+Events handlers, so this behavior is uniform across desktop and mobile.
 
 ---
 
