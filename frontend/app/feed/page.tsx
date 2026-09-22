@@ -198,6 +198,35 @@ function SwipeCard({
   const longPressTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFired  = useRef(false);
 
+  // Most recent pointermove sample (x, timestamp) and the live horizontal
+  // velocity (px/ms) computed between consecutive move events — used for
+  // flick detection at release.
+  //
+  // velocityX is recomputed on every pointermove from the PREVIOUS move to
+  // THIS one, and pointerup simply reads its current value rather than
+  // computing a fresh move-to-up delta. This distinction matters: a real
+  // finger lift is preceded by the OS/browser coalescing move events, so by
+  // the time pointerup actually fires the pointer has typically been
+  // sitting at its final position for anywhere from ~15-40ms — measuring
+  // velocity over that trailing gap systematically undercounts (or zeroes
+  // out) a genuinely fast flick, since the flick's real speed happened in
+  // the move-to-move segment just before, not in the idle gap after.
+  // Confirmed via real-browser testing (Playwright + raw pointer-event
+  // timestamp logging): a deliberately fast 20px flick produced consecutive
+  // move events ~18ms apart (a real high velocity) followed by a pointerup
+  // ~26ms after the LAST move at the SAME x (zero velocity in that final
+  // gap) — using the move-to-up delta classified it as a slow drag, not a
+  // flick, which was the wrong result for this codebase's move→up
+  // approach. Reading the live-tracked velocity instead fixes this.
+  //
+  // Once everDragged goes false→true never re-flips within a gesture (see
+  // shouldCancelLongPress's own semantics), so there's no equivalent
+  // "should this reset" concern here — velocityX simply reflects the most
+  // recent segment at all times, and resetGestureRefs zeroes it between
+  // gestures.
+  const lastMove = useRef<{ x: number; t: number } | null>(null);
+  const velocityX = useRef(0);
+
   // Live drag offset (px). Plain state, not a ref: it drives the visible
   // transform every frame, unlike the other gesture bookkeeping above which
   // never needs to trigger a render. containerWidthRef caches the card's
@@ -220,6 +249,8 @@ function SwipeCard({
     startX.current = null;
     everDragged.current = false;
     longPressFired.current = false;
+    lastMove.current = null;
+    velocityX.current = 0;
     clearLongPressTimer();
   }
 
@@ -229,6 +260,7 @@ function SwipeCard({
     startX.current = e.clientX;
     everDragged.current = false;
     longPressFired.current = false;
+    lastMove.current = { x: e.clientX, t: e.timeStamp };
     containerWidthRef.current = containerRef.current?.getBoundingClientRect().width ?? 0;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 
@@ -255,6 +287,15 @@ function SwipeCard({
       setPhase("dragging");
       setDragX(dx);
     }
+    // Live segment velocity — see velocityX's own comment above for why
+    // this is computed move-to-move rather than at release time. Guarded
+    // against a zero/negative dt (some devices/browsers can coalesce or
+    // replay events with an identical or out-of-order timeStamp).
+    if (lastMove.current) {
+      const dt = e.timeStamp - lastMove.current.t;
+      if (dt > 0) velocityX.current = (e.clientX - lastMove.current.x) / dt;
+    }
+    lastMove.current = { x: e.clientX, t: e.timeStamp };
   }
 
   function settleTo(target: number, andThen?: () => void) {
@@ -283,6 +324,7 @@ function SwipeCard({
       dy,
       everDragged: everDragged.current,
       longPressFired: longPressFired.current,
+      velocityX: velocityX.current,
     });
 
     const exitDistance = containerWidthRef.current || 380;
