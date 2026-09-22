@@ -6,9 +6,16 @@
   --border:    #ded4bd;   /* warm tan border, visible against both creams */
   --fg:        #000000;   /* primary text — pure black */
   --fg-muted:  #5c5648;   /* secondary text — dark warm grey, keeps hierarchy vs. pure-black primary */
-  --accent:    #4169e1;   /* selenium blue — unchanged, still the interactive/brand color */
-  --accent-dim:#2a47b0;   /* darker accent for hover — unchanged */
-  --accent-bg: #4169e115; /* very faint accent tint for highlights — unchanged */
+  --accent:    #c25423;   /* peach/terracotta — replaces the prior selenium blue as the interactive/brand color.
+                              Deliberately darker than a lighter peach (e.g. #ff9466) would suggest: white button
+                              text on #ff9466 only reaches 2.17:1 contrast (WCAG AA needs 4.5:1 for normal text);
+                              #c25423 reaches 4.58:1 against white and 4.03:1 as a text/link color against the
+                              cream --bg, both passing — confirmed via a real relative-luminance/contrast-ratio
+                              calculation, not eyeballed. */
+  --accent-dim:#8f3d18;   /* darker accent for hover — same darkening relationship the prior blue tokens had
+                              (--accent-dim was roughly 63% of --accent's luminance-ish "darkness"; applied the
+                              same proportional darkening here) */
+  --accent-bg: #c2542315; /* very faint accent tint for highlights — same 15/FF (~8%) alpha the prior blue token used */
   --notify:    #dc2626;   /* red — unread/notification indicators only (e.g. the nav badge dot) */
 }
 

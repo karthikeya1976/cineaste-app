@@ -6,12 +6,12 @@ import { uploadVideo, getJobStatus, type Job } from "@/lib/api";
 import { isLoggedIn, isCreator } from "@/lib/auth";
 
 const RESULT_STYLE: Record<string, React.CSSProperties> = {
-  approved: { border: "1px solid #4169e144", background: "#4169e10d" },
+  approved: { border: "1px solid #c2542344", background: "#c254230d" },
   flagged:  { border: "1px solid #b4550044", background: "#b455000d" },
   blocked:  { border: "1px solid #7f1d1d55", background: "#7f1d1d0d" },
 };
 const RESULT_COLOR: Record<string, string> = {
-  approved: "#7ba3ff",
+  approved: "#e08a5f",
   flagged:  "#fb923c",
   blocked:  "#f87171",
 };

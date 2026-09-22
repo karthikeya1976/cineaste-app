@@ -12,7 +12,8 @@
 // convention as the rest of the app, with a warning-amber accent color kept
 // literal (no --warning token exists yet in globals.css) the same way other
 // pages here use literal colors for status accents (e.g. app/search/page.tsx's
-// #f87171/#7ba3ff error/info colors).
+// #f87171/#e08a5f error/info colors — #e08a5f is the peach-tinted replacement
+// for the prior selenium-blue #7ba3ff this comment used to reference).
 
 const WARNING_COLOR = "#fbbf24"; // amber-400 — literal, no --warning token defined in globals.css yet
 

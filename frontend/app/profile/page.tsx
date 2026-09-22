@@ -263,7 +263,7 @@ export default function ProfilePage() {
             </div>
 
             {error   && <p style={{ fontSize: "13px", color: "#f87171", background: "#7f1d1d22", border: "1px solid #7f1d1d55", borderRadius: "8px", padding: "10px 12px" }}>{error}</p>}
-            {success && <p style={{ fontSize: "13px", color: "#7ba3ff", background: "#4169e122", border: "1px solid #4169e144", borderRadius: "8px", padding: "10px 12px" }}>{success}</p>}
+            {success && <p style={{ fontSize: "13px", color: "#e08a5f", background: "#c2542322", border: "1px solid #c2542344", borderRadius: "8px", padding: "10px 12px" }}>{success}</p>}
 
             <button
               type="submit" disabled={upgrading}
