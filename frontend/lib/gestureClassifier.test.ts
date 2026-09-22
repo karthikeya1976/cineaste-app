@@ -7,6 +7,7 @@ import {
   shouldCancelLongPress,
   MOVE_TOLERANCE,
   SWIPE_THRESHOLD,
+  FLICK_VELOCITY_THRESHOLD,
 } from "./gestureClassifier";
 
 describe("shouldCancelLongPress", () => {
@@ -105,6 +106,100 @@ describe("classifyPointerUp", () => {
 
   it("longPressFired short-circuits even when there was no movement at all", () => {
     const result = classifyPointerUp({ dx: 0, dy: 0, everDragged: false, longPressFired: true });
+    expect(result).toEqual({ type: "long-press" });
+  });
+});
+
+describe("classifyPointerUp — velocity-based flick", () => {
+  it("a fast short flick left, well under SWIPE_THRESHOLD, still resolves to swipe next", () => {
+    const result = classifyPointerUp({
+      dx: -(MOVE_TOLERANCE + 5), // past MOVE_TOLERANCE so everDragged is true, but nowhere near SWIPE_THRESHOLD
+      dy: 1,
+      everDragged: true,
+      longPressFired: false,
+      velocityX: -(FLICK_VELOCITY_THRESHOLD + 0.2),
+    });
+    expect(result).toEqual({ type: "swipe", direction: "next" });
+  });
+
+  it("a fast short flick right, well under SWIPE_THRESHOLD, still resolves to swipe prev", () => {
+    const result = classifyPointerUp({
+      dx: MOVE_TOLERANCE + 5,
+      dy: 1,
+      everDragged: true,
+      longPressFired: false,
+      velocityX: FLICK_VELOCITY_THRESHOLD + 0.2,
+    });
+    expect(result).toEqual({ type: "swipe", direction: "prev" });
+  });
+
+  it("direction on a qualifying flick follows velocityX's sign, not dx's, when they briefly disagree", () => {
+    // A finger that overshoots slightly and rebounds right before release:
+    // dx has gone slightly positive, but the release velocity is still
+    // clearly leftward — the flick should read as "next", matching what
+    // the user's hand was actually doing at the moment of release.
+    const result = classifyPointerUp({
+      dx: 3,
+      dy: 0,
+      everDragged: true,
+      longPressFired: false,
+      velocityX: -(FLICK_VELOCITY_THRESHOLD + 0.3),
+    });
+    expect(result).toEqual({ type: "swipe", direction: "next" });
+  });
+
+  it("exactly at FLICK_VELOCITY_THRESHOLD does NOT qualify (strictly greater-than, matches SWIPE_THRESHOLD's own convention)", () => {
+    const result = classifyPointerUp({
+      dx: MOVE_TOLERANCE + 5,
+      dy: 0,
+      everDragged: true,
+      longPressFired: false,
+      velocityX: FLICK_VELOCITY_THRESHOLD,
+    });
+    expect(result).toEqual({ type: "cancelled" });
+  });
+
+  it("a fast vertical-dominant flick does NOT qualify as a swipe (axis-dominance applies to the flick path too)", () => {
+    const result = classifyPointerUp({
+      dx: MOVE_TOLERANCE + 2,
+      dy: MOVE_TOLERANCE + 20, // |dy| > |dx|
+      everDragged: true,
+      longPressFired: false,
+      velocityX: FLICK_VELOCITY_THRESHOLD + 1, // fast, but wrong axis dominates
+    });
+    expect(result).toEqual({ type: "cancelled" });
+  });
+
+  it("omitting velocityX entirely preserves the original distance-only behavior (backward compatible)", () => {
+    const result = classifyPointerUp({
+      dx: MOVE_TOLERANCE + 5,
+      dy: 0,
+      everDragged: true,
+      longPressFired: false,
+      // no velocityX at all
+    });
+    expect(result).toEqual({ type: "cancelled" });
+  });
+
+  it("a slow drag past SWIPE_THRESHOLD still swipes via the distance path even with velocity under threshold", () => {
+    const result = classifyPointerUp({
+      dx: -(SWIPE_THRESHOLD + 10),
+      dy: 0,
+      everDragged: true,
+      longPressFired: false,
+      velocityX: -0.05, // slow release
+    });
+    expect(result).toEqual({ type: "swipe", direction: "next" });
+  });
+
+  it("longPressFired still short-circuits to long-press even with a qualifying flick velocity present", () => {
+    const result = classifyPointerUp({
+      dx: -(MOVE_TOLERANCE + 5),
+      dy: 0,
+      everDragged: true,
+      longPressFired: true,
+      velocityX: -(FLICK_VELOCITY_THRESHOLD + 1),
+    });
     expect(result).toEqual({ type: "long-press" });
   });
 });
