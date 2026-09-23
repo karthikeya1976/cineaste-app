@@ -1,7 +1,34 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-python-multipart==0.0.20
+python-multipart==0.0.32
 celery==5.4.0
 redis==5.2.1
 psycopg2-binary==2.9.10
 pytest==8.3.4
+# fastapi.testclient.TestClient (used by every route-level test in
+# tests/test_houses.py, test_department_tags.py, test_feed_ranking.py,
+# test_auth_security.py) requires httpx at runtime — FastAPI does not
+# declare it as a hard dependency, only as an optional extra. This was
+# ALREADY broken before the CI Postgres service container was added
+# (PR #50): every one of those test modules pytest.skip()'d at collection
+# whenever POSTGRES_URL was unset, which masked the missing httpx import
+# error entirely. Once the service container let those modules actually
+# collect, CI failed immediately with "The starlette.testclient module
+# requires the httpx package to be installed" — 34 errors, confirmed via
+# the first real CI run after that fix. Local development never hit this
+# because installing `fastapi[all]` (done ad hoc, not via this file) pulls
+# httpx in as a side effect.
+httpx==0.28.1
+# Previously installed ad hoc only (EC2 CloudFormation UserData,
+# infra/cloudformation.yml) but never listed here — meaning a plain
+# `pip install -r requirements.txt` (e.g. in CI) could not actually import
+# app.main at all, since main.py/storage.py/config.py import all four of
+# these directly. Found via a security-scan-gate audit of the real CI
+# pipeline; bcrypt is pinned because passlib 1.7.4 cannot detect newer
+# bcrypt releases' version string and CryptContext.hash() fails outright —
+# confirmed locally, same pin CloudFormation's UserData already uses.
+python-jose[cryptography]==3.4.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+boto3==1.35.71
+python-dotenv==1.2.2

@@ -1,6 +1,7 @@
 import os
 import tempfile
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, Depends, Form
@@ -67,7 +68,26 @@ app.add_middleware(
 # --- Auth setup ---
 pwd_context = CryptContext(schemes=["bcrypt"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
+
+# No hardcoded fallback: a misconfigured production deploy (env var unset)
+# used to silently sign every JWT with a secret visible in this file's own
+# source history, letting anyone forge a valid token for any user. Fails
+# startup loudly instead, matching app/config.py's existing POSTGRES_URL
+# pattern (raise RuntimeError with a clear message, not a silent default).
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET env var is required. "
+        "Copy .env.example to .env at the project root and fill in credentials."
+    )
+
+# JWTs previously had no exp claim at all — every login token was valid
+# forever with no server-side revocation mechanism. python-jose's
+# jwt.decode() validates exp automatically when present, raising
+# ExpiredSignatureError (a JWTError subclass) — every one of this file's
+# existing `except JWTError:` blocks already catches it correctly with no
+# changes needed there.
+JWT_EXPIRY = timedelta(hours=24)
 
 # --- Request models ---
 class RegisterRequest(BaseModel):
@@ -97,7 +117,8 @@ def login(req: LoginRequest) -> dict:
     user = db.get_user_by_email(req.email)
     if not user or not pwd_context.verify(req.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    token = jwt.encode({"sub": str(user["id"])}, JWT_SECRET, algorithm="HS256")
+    expires_at = datetime.now(timezone.utc) + JWT_EXPIRY
+    token = jwt.encode({"sub": str(user["id"]), "exp": expires_at}, JWT_SECRET, algorithm="HS256")
     return {"access_token": token, "token_type": "bearer"}
 
 
