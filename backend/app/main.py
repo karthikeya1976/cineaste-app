@@ -17,6 +17,16 @@ app = FastAPI(title="Video Moderation API")
 # Ensure DB tables exist on every startup — safe because CREATE TABLE IF NOT EXISTS is idempotent
 db._ensure_schema()
 
+# Canonical department list — duplicated from frontend/app/profile/page.tsx's
+# DEPARTMENTS constant (per the plan's Open Questions: no shared source exists
+# across the frontend/backend boundary today; both lists are short and
+# human-maintained). Used to validate POST /auth/upgrade and to build the
+# built-in Houses list on GET /houses.
+DEPARTMENTS = [
+    "Cinematography", "Directing", "Screenwriting", "Editing",
+    "Sound Design", "Visual Effects", "Production Design", "Acting", "Other",
+]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -73,6 +83,8 @@ def upgrade(req: UpgradeRequest, token: str = Depends(oauth2_scheme)) -> dict:
         user_id = payload["sub"]
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
+    if req.department not in DEPARTMENTS:
+        raise HTTPException(status_code=400, detail="Invalid department")
     user = db.upgrade_to_creator(user_id, req.department)
     return {"message": "Account upgraded to creator", "user": user}
 
@@ -141,6 +153,32 @@ async def upload_video(file: UploadFile, user_id: str = Depends(_require_creator
     return {"status": "processing", "task_id": task_id}
 
 
+def _enrich(jobs: list) -> list:
+    """Shared enrichment transform for any list of raw video rows (dicts with
+    a '_id' key from db.py) headed to the frontend: renames '_id' -> 'job_id'
+    (the frontend Job type has no _id field), 'pillar_results' -> 'pillars',
+    and converts file_path (an s3://... URI) into a real playable video_url
+    via a live presigned-URL call. None of this is a DB column — every route
+    returning Job-shaped rows (GET /feed, GET /houses/{id}/feed,
+    GET /houses/department/{name}/feed) must run its rows through this exact
+    helper, not a re-implementation, or cards silently render with no
+    job_id/video_url ("No video available")."""
+    for j in jobs:
+        j["job_id"] = j.pop("_id")
+        if "pillar_results" in j:
+            j["pillars"] = j.pop("pillar_results")
+        file_path = j.get("file_path", "")
+        if file_path.startswith("s3://"):
+            object_name = file_path.split("/", 3)[-1]
+            try:
+                j["video_url"] = storage.get_presigned_url(object_name)
+            except Exception:
+                j["video_url"] = None
+        else:
+            j["video_url"] = None
+    return jobs
+
+
 @app.get("/feed")
 def get_feed(limit: int = 50, token: Optional[str] = None) -> dict:
     """Smart feed — returns {enrouted, recommended} buckets.
@@ -155,22 +193,6 @@ def get_feed(limit: int = 50, token: Optional[str] = None) -> dict:
             pass
 
     data = db.get_feed(limit, viewer_id)
-
-    def _enrich(jobs: list) -> list:
-        for j in jobs:
-            j["job_id"] = j.pop("_id")
-            if "pillar_results" in j:
-                j["pillars"] = j.pop("pillar_results")
-            file_path = j.get("file_path", "")
-            if file_path.startswith("s3://"):
-                object_name = file_path.split("/", 3)[-1]
-                try:
-                    j["video_url"] = storage.get_presigned_url(object_name)
-                except Exception:
-                    j["video_url"] = None
-            else:
-                j["video_url"] = None
-        return jobs
 
     return {
         "enrouted":    _enrich(data["enrouted"]),
@@ -299,3 +321,101 @@ def post_comment(job_id: str, req: CommentRequest, token: Optional[str] = None) 
     if not req.body.strip():
         raise HTTPException(status_code=400, detail="Comment body cannot be empty")
     return db.add_comment(job_id, req.body.strip(), user_id)
+
+
+# ── Houses ────────────────────────────────────────────────────────────────────
+# Built-in Houses (one per department) have no table — derived from
+# users.department at query time (KTD1). Custom Houses are owned entities
+# curated by a creator via house_creator_members / house_video_members.
+
+class CreateHouseRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+def _require_house_owner(house_id: str, token: str = Depends(oauth2_scheme)) -> str:
+    """First resource-ownership check in this codebase (KTD5). Decodes the
+    token the same way _require_auth does, fetches the house, raises 404 if
+    it doesn't exist, raises 403 if the caller isn't the owner. Returns the
+    viewer_id so callers can reuse it without re-decoding."""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        viewer_id = payload["sub"]
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    house = db.get_house(house_id)
+    if not house:
+        raise HTTPException(status_code=404, detail="House not found")
+    if house["owner_id"] != viewer_id:
+        raise HTTPException(status_code=403, detail="Only the House owner can do this")
+    return viewer_id
+
+
+@app.get("/houses")
+def list_houses() -> dict:
+    """Returns {builtIn: [{name}], custom: [House]}. builtIn is the hardcoded
+    DEPARTMENTS list (no DB query); custom is every real houses row with
+    creator_count/video_count for the listing card."""
+    return {
+        "builtIn": [{"name": d} for d in DEPARTMENTS],
+        "custom": db.list_custom_houses(),
+    }
+
+
+@app.post("/houses")
+def create_house(req: CreateHouseRequest, owner_id: str = Depends(_require_creator)) -> dict:
+    """Only creators can make a House (matches the confirmed requirement),
+    reusing the existing role check exactly."""
+    house_id = str(uuid.uuid4())
+    return db.create_house(house_id, owner_id, req.name, req.description)
+
+
+@app.delete("/houses/{house_id}")
+def remove_house(house_id: str, _owner_id: str = Depends(_require_house_owner)) -> dict:
+    db.delete_house(house_id)
+    return {"deleted": True}
+
+
+@app.get("/houses/department/{name}/feed")
+def get_department_house_feed(name: str) -> dict:
+    """Built-in House feed — every approved/flagged video from creators whose
+    department exactly matches `name`. Flat list (KTD4), run through the
+    shared _enrich() transform (job_id/pillars/video_url), not a re-implementation."""
+    rows = db.get_department_house_feed(name)
+    return {"videos": _enrich(rows)}
+
+
+@app.get("/houses/{house_id}/feed")
+def get_house_feed(house_id: str) -> dict:
+    """Custom House feed — unioned creator+video membership, flat list (KTD4),
+    run through the shared _enrich() transform. No ownership check: any
+    House's feed is publicly browsable (KTD6)."""
+    rows = db.get_house_feed(house_id)
+    return {"videos": _enrich(rows)}
+
+
+@app.post("/houses/{house_id}/members/creators/{creator_id}")
+def add_house_creator(house_id: str, creator_id: str, _owner_id: str = Depends(_require_house_owner)) -> dict:
+    db.add_house_creator_member(house_id, creator_id)
+    return {"added": True}
+
+
+@app.delete("/houses/{house_id}/members/creators/{creator_id}")
+def remove_house_creator(house_id: str, creator_id: str, _owner_id: str = Depends(_require_house_owner)) -> dict:
+    db.remove_house_creator_member(house_id, creator_id)
+    return {"added": False}
+
+
+@app.post("/houses/{house_id}/members/videos/{video_id}")
+def add_house_video(house_id: str, video_id: str, _owner_id: str = Depends(_require_house_owner)) -> dict:
+    """No ownership check on the video's creator (KTD2a, deliberate): a House
+    owner can curate any existing public video into their House, regardless
+    of who created it — matching follow_user()'s no-consent-required posture."""
+    db.add_house_video_member(house_id, video_id)
+    return {"added": True}
+
+
+@app.delete("/houses/{house_id}/members/videos/{video_id}")
+def remove_house_video(house_id: str, video_id: str, _owner_id: str = Depends(_require_house_owner)) -> dict:
+    db.remove_house_video_member(house_id, video_id)
+    return {"added": False}

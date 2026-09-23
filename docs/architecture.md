@@ -82,6 +82,15 @@ mixed-content blocks, no CORS preflight). Locally, the rewrite targets
 - `GET /videos/{job_id}/comments` — list comments newest-first
 - `POST /videos/{job_id}/comments?token=<jwt>` — insert comment with optional author attribution
 
+**Houses** — built-in (one per department, derived, no table) + custom (owned, curated). See `## Houses` below for the full model.
+- `GET /houses` — `{builtIn: [{name}], custom: House[]}`. `builtIn` is the hardcoded `DEPARTMENTS` list; `custom` is every `houses` row with creator/video member counts.
+- `POST /houses` — Creator JWT required; creates a custom House owned by the caller
+- `DELETE /houses/{house_id}` — House owner JWT required
+- `GET /houses/department/{name}/feed` — built-in House feed: `{videos: Job[]}`, every approved/flagged video from creators whose `department` exactly matches `name`
+- `GET /houses/{house_id}/feed` — custom House feed: `{videos: Job[]}`, unioned creator-membership + video-membership, deduped by construction (single `SELECT`, no `DISTINCT` needed)
+- `POST /houses/{house_id}/members/creators/{creator_id}` / `DELETE` — House owner JWT required; add/remove a creator's whole catalog from the House
+- `POST /houses/{house_id}/members/videos/{video_id}` / `DELETE` — House owner JWT required; add/remove one video, **regardless of who created it** (no ownership check on the video — cross-creator curation is intentional, matching `follow_user()`'s no-consent posture)
+
 ### Storage (`backend/app/storage.py`)
 - `save_video(object_name, src_path)` — uploads file to S3 bucket `amzn-s3-bucket-dvm` (us-east-2)
 - `get_presigned_url(object_name)` — generates a time-limited S3 URL for streaming
@@ -254,6 +263,54 @@ Frontend merges with section dividers:
   [Recommended]   ← recommended bucket (if non-empty)
   video, video, …
 ```
+
+**House-scoped feeds diverge from this shape** — `GET /houses/{house_id}/feed` and
+`GET /houses/department/{name}/feed` return a flat `{videos: Job[]}`, not the
+`{enrouted, recommended}` bucket split (KTD4): a House isn't something you
+follow/don't-follow, so the enrouted/recommended distinction doesn't apply
+inside one. Both feeds are ordered by `created_at DESC` only, and the
+frontend renders at most one section-label divider (the House/department
+name) instead of the Following/Recommended two-divider pattern. Both House
+feed routes run their rows through the same `_enrich()` transform `GET
+/feed` uses (job_id/pillars/presigned video_url) — see `## Houses` below.
+
+---
+
+## Houses
+
+Two kinds of House, one browsing surface (the existing swipe feed, scoped):
+
+- **Built-in Houses** — one per department. No table: `GET
+  /houses/department/{name}/feed` derives membership live via `SELECT ...
+  FROM videos JOIN users WHERE users.department = :name AND
+  videos.overall_status IN ('approved','flagged')`. The department list
+  (`DEPARTMENTS`) is duplicated backend-side in `main.py` from
+  `frontend/app/profile/page.tsx`'s constant of the same name — both lists
+  are short and human-maintained, kept in sync by hand. **`POST
+  /auth/upgrade` validates `department` against this list (400 if no exact
+  match)** — closes a gap where an unvalidated `department` string would
+  otherwise leave a creator silently invisible to their own built-in House
+  (a case/whitespace/typo mismatch just returns zero rows, with no error
+  anywhere in the pipeline).
+- **Custom Houses** — an owned, curated entity (`houses` table). The owner
+  adds specific creators (`house_creator_members` — that creator's whole
+  catalog, present and future) and/or specific individual videos
+  (`house_video_members` — independent of who made them; **no ownership
+  check on the video's creator**, cross-creator curation is intentional,
+  matching `follow_user()`'s existing no-consent-required posture). A video
+  that qualifies via both creator-membership and individual video-membership
+  appears exactly once in the feed — one `SELECT` with an `OR`'d `WHERE`
+  over the `videos` table cannot itself return the same row twice, so no
+  `DISTINCT` is needed. Public by default, no private/visibility flag
+  (KTD6); only the owner can edit membership or delete the House
+  (`_require_house_owner` in `main.py` — this codebase's first
+  resource-ownership check, decode-token → fetch-house → 404-if-missing →
+  403-if-not-owner, mirroring `_require_creator`'s shape).
+
+Membership rows have no `overall_status` gate at write time, only at
+feed-read time — an owner can add a not-yet-approved video/creator; it
+simply won't render until (if ever) approved, per the feed queries' existing
+`overall_status` filter.
 
 ---
 

@@ -115,6 +115,13 @@ Content   (Sightengine) Content    Relevance
 | GET | `/creators/{id}` | JWT optional | Creator profile + follow state |
 | POST | `/creators/{id}/follow` | JWT | Enroute a creator |
 | DELETE | `/creators/{id}/follow` | JWT | Deroute a creator |
+| GET | `/houses` | — | List built-in (department) + custom Houses |
+| POST | `/houses` | JWT (creator) | Create a custom House |
+| DELETE | `/houses/{house_id}` | JWT (owner) | Delete a custom House |
+| GET | `/houses/department/{name}/feed` | — | Built-in House feed (all creators in that department) |
+| GET | `/houses/{house_id}/feed` | — | Custom House feed (member creators + member videos, unioned) |
+| POST/DELETE | `/houses/{house_id}/members/creators/{creator_id}` | JWT (owner) | Add/remove a creator's whole catalog from a House |
+| POST/DELETE | `/houses/{house_id}/members/videos/{video_id}` | JWT (owner) | Add/remove one video from a House (any video, regardless of creator) |
 
 ---
 
@@ -126,6 +133,12 @@ videos   (id TEXT, filename, file_path, status, overall_status,
           pillar_results JSONB, reasons JSONB, user_id, created_at, updated_at)
 follows  (follower_id UUID, following_id UUID, created_at)  -- PK both columns
 comments (id UUID, video_id TEXT, user_id UUID, body, created_at)
+
+-- Houses: built-in Houses (one per department) have no table, derived from
+-- users.department at query time. Only custom Houses are real rows.
+houses                 (id TEXT, owner_id UUID, name, description, created_at)
+house_creator_members  (house_id TEXT, creator_id UUID, added_at)  -- PK both columns
+house_video_members    (house_id TEXT, video_id TEXT, added_at)    -- PK both columns
 ```
 
 ---
