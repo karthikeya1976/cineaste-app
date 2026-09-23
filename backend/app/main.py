@@ -210,22 +210,37 @@ async def upload_video(
     return {"status": "processing", "task_id": task_id}
 
 
-def _enrich(jobs: list) -> list:
+def _enrich(jobs: list, viewer_id: Optional[str] = None) -> list:
     """Shared enrichment transform for any list of raw video rows (dicts with
     a '_id' key from db.py) headed to the frontend: renames '_id' -> 'job_id'
     (the frontend Job type has no _id field), 'pillar_results' -> 'pillars',
-    attaches department_tags (batch-fetched, not N+1), and converts file_path
-    (an s3://... URI) into a real playable video_url via a live presigned-URL
-    call. None of this is a DB column — every route returning Job-shaped rows
-    (GET /feed, GET /houses/{id}/feed, GET /houses/department/{name}/feed)
-    must run its rows through this exact helper, not a re-implementation, or
-    cards silently render with no job_id/video_url ("No video available")."""
+    attaches department_tags and credit_count/comment_count (all batch-
+    fetched, not N+1), and converts file_path (an s3://... URI) into a real
+    playable video_url via a live presigned-URL call. None of this is a DB
+    column — every route returning Job-shaped rows (GET /feed, GET
+    /houses/{id}/feed, GET /houses/department/{name}/feed) must run its rows
+    through this exact helper, not a re-implementation, or cards silently
+    render with no job_id/video_url ("No video available").
+
+    viewer_id (optional) additionally attaches 'credited': whether THIS
+    viewer has already credited each video — fixes a pre-existing bug where
+    the star button's filled state only ever reflected same-session client
+    state, never the real server-side record (a page reload silently lost
+    it). Per-video, per-viewer, so this can't be batch-fetched the same way
+    as the aggregate counts; omitted (each row gets credited=False) when
+    there's no logged-in viewer, matching every other viewer-optional field
+    elsewhere in this API (e.g. is_following)."""
     ids = [j["_id"] for j in jobs]
     tags_by_video = db.get_department_tags_for_videos(ids)
+    engagement_by_video = db.get_engagement_counts_for_videos(ids)
     for j in jobs:
         video_id = j.pop("_id")
         j["job_id"] = video_id
         j["department_tags"] = tags_by_video.get(video_id, [])
+        engagement = engagement_by_video.get(video_id, {"credits": 0, "comments": 0})
+        j["credit_count"] = engagement["credits"]
+        j["comment_count"] = engagement["comments"]
+        j["credited"] = db.get_video_credit_state(video_id, viewer_id) if viewer_id else False
         if "pillar_results" in j:
             j["pillars"] = j.pop("pillar_results")
         file_path = j.get("file_path", "")
@@ -256,8 +271,8 @@ def get_feed(limit: int = 50, token: Optional[str] = None) -> dict:
     data = db.get_feed(limit, viewer_id)
 
     return {
-        "enrouted":    _enrich(data["enrouted"]),
-        "recommended": _enrich(data["recommended"]),
+        "enrouted":    _enrich(data["enrouted"], viewer_id),
+        "recommended": _enrich(data["recommended"], viewer_id),
     }
 
 
@@ -323,15 +338,6 @@ def remove_department_tag(job_id: str, department: str, _owner_id: str = Depends
     return {"department_tags": db.get_video_department_tags(job_id)}
 
 
-# ── Credits ───────────────────────────────────────────────────────────────────
-
-@app.post("/videos/{job_id}/credit")
-def give_credit(job_id: str) -> dict:
-    """Add 1 credit to the creator of a video."""
-    new_total = db.add_credit(job_id)
-    return {"credits": new_total}
-
-
 # ── Follow / Unfollow ─────────────────────────────────────────────────────────
 
 def _require_auth(token: str = Depends(oauth2_scheme)) -> str:
@@ -341,6 +347,29 @@ def _require_auth(token: str = Depends(oauth2_scheme)) -> str:
         return payload["sub"]
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+# ── Credits ───────────────────────────────────────────────────────────────────
+# Requires login and is per-user, deduplicated (toggle: credit once, tap
+# again to un-credit) — replaces the old POST /videos/{job_id}/credit, which
+# had no auth check and no way to know who credited what, making it both
+# spammable and unusable as a ranking signal (see docs/changelog.md's entry
+# on this feature for the full rationale).
+
+@app.post("/videos/{job_id}/credit")
+def toggle_credit(job_id: str, viewer_id: str = Depends(_require_auth)) -> dict:
+    return db.toggle_video_credit(job_id, viewer_id)
+
+
+# ── Not interested ────────────────────────────────────────────────────────────
+
+@app.post("/videos/{job_id}/dismiss")
+def dismiss_video(job_id: str, viewer_id: str = Depends(_require_auth)) -> dict:
+    """'Not interested' — hides this video from the caller's own feed going
+    forward. Per-video only (no creator-level snooze), per the confirmed
+    scope for this feature."""
+    db.dismiss_video(viewer_id, job_id)
+    return {"dismissed": True}
 
 
 @app.post("/creators/{creator_id}/follow")

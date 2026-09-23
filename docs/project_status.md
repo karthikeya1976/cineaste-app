@@ -194,6 +194,17 @@
 - [x] Respects `prefers-reduced-motion` — static ring, no keyframe `<style>` injected under reduced motion
 - [x] Verified in a real browser (screenshots), including catching and working around a stale local `.env.local` that was silently pointing local dev at the production API mid-verification
 
+### Right-Sized Feed Ranking, Per-Video Credits, "Not Interested" ✅ (not yet deployed to EC2)
+- [x] `video_credits` table — per-user, per-video, toggleable; replaces the old unauthenticated/undeduped counter entirely
+- [x] `POST /videos/{id}/credit` now requires login and toggles (credit/un-credit) instead of only ever incrementing
+- [x] `users.credits` frozen as a historical total; `get_creator_profile`/`search` now compute a LIVE sum from `video_credits` instead
+- [x] Fixed a real pre-existing bug: the star button's filled/count state was client-session-only, never read from the server — every video always showed 0 credits on page load regardless of real engagement
+- [x] `get_feed`'s `recommended` bucket now uses a weighted score (`3*credits + 2*comments + 1*recency_decay`, 48h half-life) instead of `creator.credits DESC` — fixes a popular creator's old videos always outranking a new creator's good video; `enrouted` deliberately stays purely chronological
+- [x] `dismissed_videos` table + `POST /videos/{id}/dismiss` — "not interested," excluded from both feed buckets, removed from the current session immediately (not just the next fetch)
+- [x] Found and fixed two unrelated pre-existing bugs during real-browser verification: the divider auto-skip could double-fire under React StrictMode (moved into a proper `useEffect`), and `SwipeCard`'s unconditional `setPointerCapture()` was silently breaking real clicks on every action button (Credits/Comment/Share/Save/Not interested) and Enroute
+- [x] `tests/test_feed_ranking.py` — 28 new tests against a live Postgres; full existing suite (106 total) passes with no regressions
+- [ ] Not yet deployed to EC2 / verified live
+
 ## Pending / Future
 - [ ] Creator profile: list their approved videos inline
 - [ ] Notifications for new followers and credits received

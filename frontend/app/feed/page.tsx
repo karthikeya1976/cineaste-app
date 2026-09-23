@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { getFeed, getHouseFeed, getDepartmentHouseFeed, listHouses, giveCredit, followCreator, unfollowCreator, getComments, postComment, type Job, type Comment, type FeedResponse } from "@/lib/api";
+import { getFeed, getHouseFeed, getDepartmentHouseFeed, listHouses, toggleCredit, dismissVideo, followCreator, unfollowCreator, getComments, postComment, type Job, type Comment, type FeedResponse } from "@/lib/api";
 import { isLoggedIn, getUser } from "@/lib/auth";
 import { isDivider, type FeedItem, type SectionDivider } from "@/lib/feedItems";
 import { parseHouseParam } from "@/lib/houses";
@@ -96,6 +96,16 @@ function IconBookmark({ filled }: { filled: boolean }) {
       fill={filled ? "#e08a5f" : "none"}
       stroke={filled ? "#e08a5f" : "#fff"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+function IconNotInterested() {
+  return (
+    <svg width="26" height="26" viewBox="0 0 24 24" style={{ filter: ICON_SHADOW }}
+      fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   );
 }
@@ -326,6 +336,23 @@ function SwipeCard({
 
   function onPointerDown(e: React.PointerEvent) {
     if (phase === "settling") return; // ignore new gestures until the current commit/snap-back animation finishes
+    // A pointerdown that starts on a nested interactive element (the
+    // right-side action buttons, the Enroute pill, etc.) must NOT be
+    // claimed as a card gesture at all — setPointerCapture on the card's
+    // root, once called, redirects EVERY subsequent pointer/mouse event
+    // (including the eventual click) back to the card itself regardless of
+    // where the cursor actually is, per the Pointer Events spec. This was a
+    // real, confirmed bug affecting all five action buttons (Credits,
+    // Comment, Share, Save, Not interested) and the Enroute pill for any
+    // real pointer/touch input, not just this file's own gesture logic —
+    // confirmed via raw mouse-coordinate click tracing showing a click at
+    // the Comment button's exact screen position landing on the card's
+    // root div instead. Letting the event pass through untouched here
+    // (no capture, no gesture-ref writes, no long-press timer) restores
+    // native click behavior for every nested interactive element.
+    const target = e.target as HTMLElement;
+    if (target.closest("button, a, [role='button']")) return;
+
     startY.current = e.clientY;
     startX.current = e.clientX;
     everDragged.current = false;
@@ -713,6 +740,24 @@ function FeedPageInner() {
     });
   }, [items]);
 
+  // Auto-skip a divider landed on directly (only really reachable on
+  // initial mount, since goNext/goPrev above already skip past dividers on
+  // their own) — moved into an effect, keyed on [current, items], rather
+  // than a bare setTimeout in the render body. The old render-body version
+  // scheduled a new timer on every render where the divider was current,
+  // including React StrictMode's deliberate double-render in dev: two
+  // independent timers could both still be pending when current hadn't
+  // advanced yet, and both would fire goNext(), skipping TWO items instead
+  // of one (confirmed via real-browser testing — a 3-item feed opened on
+  // item 3 instead of item 1). The cleanup here cancels any pending timer
+  // whenever current/items changes (or the component unmounts), so at most
+  // one timer from the CURRENT divider-landing can ever fire.
+  useEffect(() => {
+    if (!isDivider(items[current])) return;
+    const t = setTimeout(() => goNext(), 600);
+    return () => clearTimeout(t);
+  }, [current, items, goNext]);
+
   // Keyboard navigation still works alongside swipe. Horizontal-swipe feed
   // redesign: ArrowUp/ArrowDown dropped entirely (full replacement, no
   // aliasing) in favor of ArrowRight/ArrowLeft matching the new swipe
@@ -786,9 +831,6 @@ function FeedPageInner() {
       </div>
     );
   }
-
-  const currentItem = items[current];
-  if (isDivider(currentItem)) setTimeout(() => goNext(), 600);
 
   const job      = currentJob ?? videoItems[0];
   const initials = (job.creator_name ?? "?").charAt(0).toUpperCase();
@@ -992,15 +1034,26 @@ function FeedPageInner() {
           }}>
             <ActionBtn
               onClick={async () => {
-                if (credited[job.job_id]) return;
+                // Optimistic toggle, reconciled with the server's real
+                // count on response — isCreditedNow captures the PRE-toggle
+                // state so the optimistic delta (+1/-1) matches what the
+                // server is about to do, not what the UI already shows.
+                const isCreditedNow = credited[job.job_id] ?? job.credited ?? false;
+                const currentCount = creditCounts[job.job_id] ?? job.credit_count ?? 0;
+                setCredited(c => ({ ...c, [job.job_id]: !isCreditedNow }));
+                setCreditCounts(c => ({ ...c, [job.job_id]: currentCount + (isCreditedNow ? -1 : 1) }));
                 try {
-                  const { credits } = await giveCredit(job.job_id);
-                  setCredited(c => ({ ...c, [job.job_id]: true }));
+                  const { credited: nowCredited, credits } = await toggleCredit(job.job_id);
+                  setCredited(c => ({ ...c, [job.job_id]: nowCredited }));
                   setCreditCounts(c => ({ ...c, [job.job_id]: credits }));
-                } catch { /* silently ignore */ }
+                } catch {
+                  // Revert the optimistic update on failure.
+                  setCredited(c => ({ ...c, [job.job_id]: isCreditedNow }));
+                  setCreditCounts(c => ({ ...c, [job.job_id]: currentCount }));
+                }
               }}
-              icon={<IconStar filled={!!credited[job.job_id]} />}
-              label={String(creditCounts[job.job_id] ?? 0)}
+              icon={<IconStar filled={credited[job.job_id] ?? job.credited ?? false} />}
+              label={String(creditCounts[job.job_id] ?? job.credit_count ?? 0)}
             />
             <ActionBtn onClick={() => setCommenting(true)} icon={<IconComment />} label="Comment" />
             <ActionBtn onClick={handleShare} icon={<IconShare />} label="Share" />
@@ -1008,6 +1061,22 @@ function FeedPageInner() {
               onClick={() => setSaved(s => ({ ...s, [job.job_id]: !s[job.job_id] }))}
               icon={<IconBookmark filled={!!saved[job.job_id]} />}
               label="Save"
+            />
+            <ActionBtn
+              onClick={async () => {
+                try {
+                  await dismissVideo(job.job_id);
+                  showToast("Won't show this again");
+                  // Removed from THIS session's items immediately, not just
+                  // excluded from the next getFeed() fetch — otherwise
+                  // swiping back (goPrev) would still show the just-
+                  // dismissed video until the next reload, which reads as
+                  // "not interested" not actually working.
+                  setItems(list => list.filter(i => isDivider(i) || i.job_id !== job.job_id));
+                } catch { /* silently ignore */ }
+              }}
+              icon={<IconNotInterested />}
+              label="Not interested"
             />
           </div>
 
