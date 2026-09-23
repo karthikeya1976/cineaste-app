@@ -72,7 +72,7 @@ export default function AuthPage() {
         {/* Brand */}
         <div style={{ textAlign: "center", marginBottom: "32px" }}>
           <h1 style={{ fontSize: "28px", fontWeight: 700, color: "var(--fg)", letterSpacing: "-0.5px" }}>
-            Cineaste
+            Misence
           </h1>
           <p style={{ fontSize: "13px", color: "var(--fg-muted)", marginTop: "4px" }}>
             We only talk about movies here.

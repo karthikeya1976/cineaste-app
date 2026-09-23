@@ -153,16 +153,16 @@ export default function NavBar() {
       {/* Logo — navigates to home feed */}
       <Link href="/feed" className="flex items-center px-4 py-5 min-h-[64px] overflow-hidden"
            style={{ borderBottom: "1px solid var(--border)", textDecoration: "none" }}>
-        {/* Collapsed: show "Ci" monogram; expanded: show full name */}
+        {/* Collapsed: show "M" monogram; expanded: show full name */}
         <span className="font-black text-base tracking-tight whitespace-nowrap shrink-0
                          group-hover:hidden"
               style={{ color: "var(--accent)" }}>
-          Ci
+          M
         </span>
         <span className="font-black text-base tracking-tight whitespace-nowrap hidden
                          group-hover:block"
               style={{ color: "var(--accent)" }}>
-          Cineaste
+          Misence
         </span>
       </Link>
 

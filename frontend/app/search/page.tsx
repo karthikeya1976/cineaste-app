@@ -128,7 +128,7 @@ export default function SearchPage() {
             style={{ margin: "0 auto 12px", display: "block", opacity: 0.35 }}>
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
           </svg>
-          <p style={{ fontSize: "14px", fontWeight: 500 }}>Find filmmakers on Cineaste</p>
+          <p style={{ fontSize: "14px", fontWeight: 500 }}>Find filmmakers on Misence</p>
           <p style={{ fontSize: "12px", marginTop: "6px", opacity: 0.6 }}>Search by name, department, or video title</p>
         </div>
       )}
