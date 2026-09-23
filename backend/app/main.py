@@ -22,9 +22,20 @@ db._ensure_schema()
 # across the frontend/backend boundary today; both lists are short and
 # human-maintained). Used to validate POST /auth/upgrade and to build the
 # built-in Houses list on GET /houses.
+#
+# MUST be kept byte-for-byte identical (same strings, same order) to the
+# frontend's copy — mismatched entries here would either reject a valid
+# selection from the frontend's dropdown (400 on upgrade) or leave a real
+# frontend option unable to ever get accepted server-side.
 DEPARTMENTS = [
     "Cinematography", "Directing", "Screenwriting", "Editing",
-    "Sound Design", "Visual Effects", "Production Design", "Acting", "Other",
+    "Sound Design", "Visual Effects", "Production Design", "Acting",
+    "Producing", "Camera", "Grip & Electric", "Art Department",
+    "Set Decoration", "Costume Design", "Hair & Makeup", "Sound Recording",
+    "Music", "Special Effects", "Stunts", "Casting", "Locations",
+    "Production Management", "Script Supervision", "Continuity",
+    "Colorist / Post-Production", "Animation", "Transportation",
+    "Catering & Craft Services", "Other",
 ]
 
 app.add_middleware(
