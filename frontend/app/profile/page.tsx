@@ -18,9 +18,20 @@ import {
 // separately — keeping this list flat-select-friendly rather than needing a
 // searchable/filterable picker). The original 9 entries are preserved
 // verbatim and in their original relative order (any existing
-// users.department value must keep matching exactly) with new department-
-// level categories added around them; "Other" moved to the end as the
-// catch-all it's meant to be.
+// users.department value must keep matching exactly); "Other" stays the
+// catch-all at the end.
+//
+// Deliberately scoped to departments that involve real craftsmanship/
+// creativity — logistics and support roles (the previous list's Locations,
+// Continuity, Transportation, Catering & Craft Services) were removed and
+// replaced with genuine, distinct craft roles not already covered elsewhere
+// in this list (Choreography vs. Stunts' physical-safety/execution focus;
+// Foley Artistry vs. Sound Design's conceptual work and Sound Recording's
+// production capture; Storyboarding/Previsualization vs. Screenwriting/
+// Directing; Prosthetics & Creature Design vs. Hair & Makeup and Special
+// Effects). Confirmed via the live backend that no existing creator had
+// selected any of the four removed departments before this change, so no
+// users.department value needed migrating.
 //
 // MUST be kept byte-for-byte in sync with backend/app/main.py's own
 // DEPARTMENTS constant — the backend validates POST /auth/upgrade's
@@ -31,10 +42,11 @@ const DEPARTMENTS = [
   "Sound Design", "Visual Effects", "Production Design", "Acting",
   "Producing", "Camera", "Grip & Electric", "Art Department",
   "Set Decoration", "Costume Design", "Hair & Makeup", "Sound Recording",
-  "Music", "Special Effects", "Stunts", "Casting", "Locations",
-  "Production Management", "Script Supervision", "Continuity",
-  "Colorist / Post-Production", "Animation", "Transportation",
-  "Catering & Craft Services", "Other",
+  "Music", "Special Effects", "Stunts", "Casting",
+  "Production Management", "Script Supervision", "Choreography",
+  "Foley Artistry", "Storyboarding / Previsualization",
+  "Prosthetics & Creature Design", "Colorist / Post-Production",
+  "Animation", "Other",
 ];
 
 const inputStyle: React.CSSProperties = {

@@ -23,6 +23,13 @@ db._ensure_schema()
 # human-maintained). Used to validate POST /auth/upgrade and to build the
 # built-in Houses list on GET /houses.
 #
+# Deliberately scoped to craftsmanship/creativity roles only — logistics and
+# support departments (Locations, Continuity, Transportation, Catering &
+# Craft Services) were removed and replaced with genuine, distinct craft
+# roles (Choreography, Foley Artistry, Storyboarding / Previsualization,
+# Prosthetics & Creature Design) — see the frontend's copy for the full
+# rationale on why each replacement is distinct from existing entries.
+#
 # MUST be kept byte-for-byte identical (same strings, same order) to the
 # frontend's copy — mismatched entries here would either reject a valid
 # selection from the frontend's dropdown (400 on upgrade) or leave a real
@@ -32,10 +39,11 @@ DEPARTMENTS = [
     "Sound Design", "Visual Effects", "Production Design", "Acting",
     "Producing", "Camera", "Grip & Electric", "Art Department",
     "Set Decoration", "Costume Design", "Hair & Makeup", "Sound Recording",
-    "Music", "Special Effects", "Stunts", "Casting", "Locations",
-    "Production Management", "Script Supervision", "Continuity",
-    "Colorist / Post-Production", "Animation", "Transportation",
-    "Catering & Craft Services", "Other",
+    "Music", "Special Effects", "Stunts", "Casting",
+    "Production Management", "Script Supervision", "Choreography",
+    "Foley Artistry", "Storyboarding / Previsualization",
+    "Prosthetics & Creature Design", "Colorist / Post-Production",
+    "Animation", "Other",
 ]
 
 app.add_middleware(
