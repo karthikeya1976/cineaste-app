@@ -1,4 +1,4 @@
-# Editor Club
+# Cineaste
 
 **A filmmaker discovery platform with AI-powered video moderation.**
 

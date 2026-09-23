@@ -4,10 +4,10 @@
 // user is about to send or read something they might reasonably assume is
 // encrypted, so the placeholder crypto is never silently passed off as real.
 //
-// Restyled from gatekept/web/components/CryptoNotice.tsx for Editor Club's
+// Restyled from gatekept/web/components/CryptoNotice.tsx for Cineaste's
 // design system: the source hardcoded light-theme Tailwind classes
-// (bg-amber-50/text-amber-900 with dark: variants) that don't fit Editor
-// Club's single fixed dark palette (see frontend/app/globals.css — there is
+// (bg-amber-50/text-amber-900 with dark: variants) that don't fit Cineaste's
+// single fixed dark palette (see frontend/app/globals.css — there is
 // no dark: variant system here). Uses the same CSS-variable-via-inline-style
 // convention as the rest of the app, with a warning-amber accent color kept
 // literal (no --warning token exists yet in globals.css) the same way other

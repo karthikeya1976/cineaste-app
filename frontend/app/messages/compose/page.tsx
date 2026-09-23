@@ -5,7 +5,7 @@
 // Rewritten, not copied: the source called the now-deleted handle-keyed
 // getPreKeyBundle(profile.handle) and searched Gatekept's own handle
 // directory (findUserByHandle). Gatekept's backend has no handle-keyed
-// routes at all anymore — this uses Editor Club's /search-users (all
+// routes at all anymore — this uses Cineaste's /search-users (all
 // account_types, not just creators) for lookup and the ID-keyed
 // GET /keys/:userId/bundle for the prekey fetch.
 //
@@ -267,7 +267,7 @@ function MessagesSearchPageInner() {
               </svg>
               <p style={{ fontSize: "14px", fontWeight: 500 }}>Find people to message</p>
               <p style={{ fontSize: "12px", marginTop: "6px", opacity: 0.6 }}>
-                Search any Editor Club member by name — viewers and creators
+                Search any Cineaste member by name — viewers and creators
               </p>
             </div>
           )}
