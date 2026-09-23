@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { Suspense, useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
-import { getFeed, giveCredit, followCreator, unfollowCreator, getComments, postComment, type Job, type Comment, type FeedResponse } from "@/lib/api";
-import { isLoggedIn } from "@/lib/auth";
+import { useSearchParams } from "next/navigation";
+import { getFeed, getHouseFeed, getDepartmentHouseFeed, listHouses, giveCredit, followCreator, unfollowCreator, getComments, postComment, type Job, type Comment, type FeedResponse } from "@/lib/api";
+import { isLoggedIn, getUser } from "@/lib/auth";
 import { isDivider, type FeedItem, type SectionDivider } from "@/lib/feedItems";
+import { parseHouseParam } from "@/lib/houses";
 import { classifyPointerUp, shouldCancelLongPress, LONG_PRESS_MS } from "@/lib/gestureClassifier";
 import { ThumbnailStrip } from "@/components/ThumbnailStrip";
 
@@ -434,7 +436,23 @@ function SwipeCard({
 }
 
 /* ── Main feed page ──────────────────────────────────────────────────────── */
+// useSearchParams requires a Suspense boundary in the App Router — same
+// required restructuring as app/messages/compose/page.tsx (see that file's
+// own comment on this exact point). Today's entire component body moves,
+// unchanged, into FeedPageInner; this default export is just the thin
+// wrapping shell. Omitting this causes a build/prerender failure per this
+// app's pinned Next.js version, not a lint warning (Houses navigation plan,
+// U5 Approach / Risks).
 export default function FeedPage() {
+  return (
+    <Suspense fallback={null}>
+      <FeedPageInner />
+    </Suspense>
+  );
+}
+
+function FeedPageInner() {
+  const searchParams = useSearchParams();
   const [, setFeed]                     = useState<FeedResponse>({ enrouted: [], recommended: [] });
   const [items, setItems]               = useState<FeedItem[]>([]);
   const [loading, setLoading]           = useState(true);
@@ -448,26 +466,145 @@ export default function FeedPage() {
   const [commenting, setCommenting]     = useState(false);
   const [toast, setToast]               = useState("");
   const [stripOpen, setStripOpen]       = useState(false);
+  // House-scoped empty-state copy needs to distinguish a non-owner visitor
+  // from the custom House's own owner (Houses plan, U5 Test scenarios —
+  // "the empty-state copy fix"). null = not house-scoped at all; otherwise
+  // set alongside `items` inside the mount effect below.
+  const [houseScope, setHouseScope]     = useState<
+    | null
+    | { kind: "department"; name: string }
+    | { kind: "custom"; id: string; isOwner: boolean }
+  >(null);
   const videoRefs                       = useRef<Record<string, HTMLVideoElement | null>>({});
 
   useEffect(() => {
-    getFeed()
-      .then(data => {
-        setFeed(data);
-        const list: FeedItem[] = [];
-        if (data.enrouted.length > 0) {
-          list.push({ _divider: true, label: "Following" });
-          list.push(...data.enrouted);
+    // House-scoped branch (Houses navigation plan, KTD3/KTD4/KTD7): a
+    // `house` search param switches the data source from the default
+    // getFeed() to one of the two House-feed endpoints and builds `items`
+    // with a single section-label divider instead of the Following/
+    // Recommended two-divider shape. A null `house` param (the default,
+    // everyday /feed visit) falls through to the existing getFeed() path,
+    // completely unchanged from before this branch existed — this is the
+    // "byte-for-byte identical default /feed" guarantee the plan's Risks
+    // section calls out as the highest-value thing to get right here.
+    const parsed = parseHouseParam(searchParams.get("house"));
+
+    if (parsed === null) {
+      getFeed()
+        .then(data => {
+          // houseScope reset happens here, inside the resolved callback,
+          // rather than synchronously at the top of the effect body — this
+          // repo's react-hooks/set-state-in-effect rule flags ANY
+          // synchronous setState call in an effect body (guarded or not;
+          // see app/profile/page.tsx's own comment on this same rule).
+          // Safe to defer past the fetch: `loading` (set back to false
+          // only in .finally below) already gates every render path that
+          // reads houseScope, so there's no window where stale House-scope
+          // state is visibly read before this resolves.
+          setHouseScope(null);
+          setFeed(data);
+          const list: FeedItem[] = [];
+          if (data.enrouted.length > 0) {
+            list.push({ _divider: true, label: "Following" });
+            list.push(...data.enrouted);
+          }
+          if (data.recommended.length > 0) {
+            list.push({ _divider: true, label: "Recommended" });
+            list.push(...data.recommended);
+          }
+          setItems(list);
+          // Reset the swipe position whenever the House scope itself
+          // changes (e.g. navigating from one House's feed straight to
+          // another's, or back to the default feed, via a client-side
+          // Link — which re-runs this effect without remounting the
+          // component) — otherwise `current` would carry over an index
+          // from the previous item list, which may be out of bounds or
+          // land on the wrong video for the newly-loaded list. A plain
+          // first mount on the default /feed also hits
+          // this with no observable effect, since `current` already
+          // starts at 0.
+          setCurrent(0);
+        })
+        .catch(e => setError(e.message))
+        .finally(() => setLoading(false));
+      return;
+    }
+
+    // House-scoped: the `feed` state (write-only today — nothing reads it
+    // back after the initial setFeed(data) call above) is intentionally
+    // left at its default {enrouted: [], recommended: []} value rather than
+    // synthesizing a fake bucketed shape for a response that isn't
+    // bucketed that way (KTD4 — flat list, not enrouted/recommended).
+    //
+    // Wrapped in an async IIFE, rather than setLoading(true)/setError("")
+    // called synchronously at the top of the effect body followed by plain
+    // .then() chains — matching app/settings/privacy/page.tsx's own exact
+    // pattern (see that file's comment) so every setState call here,
+    // including the mid-lifecycle setLoading(true) this branch genuinely
+    // needs (unlike the privacy page, which only ever needs
+    // setLoading(false)), is lexically inside the async function rather
+    // than the synchronous top of the effect — the shape this repo's
+    // react-hooks/set-state-in-effect rule flags.
+    (async () => {
+      setLoading(true);
+      setError("");
+
+      if (parsed.kind === "department") {
+        setHouseScope({ kind: "department", name: parsed.name });
+        try {
+          const data = await getDepartmentHouseFeed(parsed.name);
+          const list: FeedItem[] = [];
+          if (data.videos.length > 0) {
+            list.push({ _divider: true, label: parsed.name });
+            list.push(...data.videos);
+          }
+          setItems(list);
+          setCurrent(0); // see the default-feed branch above for why this resets alongside the data, not before the fetch starts
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Could not load this House");
+        } finally {
+          setLoading(false);
         }
-        if (data.recommended.length > 0) {
-          list.push({ _divider: true, label: "Recommended" });
-          list.push(...data.recommended);
+        return;
+      }
+
+      // Custom House: owner-vs-visitor determines which empty-state copy
+      // renders below (U5 Test scenarios) — resolved from the current
+      // user's id against the House's owner_id, same pattern
+      // app/houses/[id]/page.tsx already uses. Fetched alongside the feed
+      // rather than blocking it: there is no single-House GET endpoint, so
+      // the House's own name/owner_id come from listHouses() (the same
+      // list GET /houses already returns in full) run in parallel with
+      // getHouseFeed(), not sequentially before it — the feed renders as
+      // soon as it resolves, and the section label / owner-aware empty
+      // state fill in a beat later without re-blocking the loading state.
+      try {
+        const [data, houses] = await Promise.all([
+          getHouseFeed(parsed.id),
+          listHouses().catch(() => null),
+        ]);
+        const house = houses?.custom.find(h => h.id === parsed.id) ?? null;
+        const label = house?.name ?? "This House";
+        const list: FeedItem[] = [];
+        if (data.videos.length > 0) {
+          list.push({ _divider: true, label });
+          list.push(...data.videos);
         }
         setItems(list);
-      })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
-  }, []);
+        setCurrent(0); // see the default-feed branch above for why this resets alongside the data, not before the fetch starts
+        const viewerId = getUser()?.id;
+        setHouseScope({
+          kind: "custom",
+          id: parsed.id,
+          isOwner: !!viewerId && !!house && viewerId === house.owner_id,
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not load this House");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [searchParams]);
 
   const videoItems = items.filter((i): i is Job => !isDivider(i));
 
@@ -563,12 +700,43 @@ export default function FeedPage() {
   if (error) return (
     <div style={{ color: "#f87171", background: "#7f1d1d22", border: "1px solid #7f1d1d55", borderRadius: "10px", padding: "12px 16px", fontSize: "13px" }}>{error}</div>
   );
-  if (videoItems.length === 0) return (
-    <div style={{ textAlign: "center", paddingTop: "80px", color: "var(--fg-muted)" }}>
-      <p style={{ fontSize: "16px", fontWeight: 500 }}>No videos yet.</p>
-      <p style={{ fontSize: "13px", marginTop: "6px" }}>Upload filmmaking content to get started.</p>
-    </div>
-  );
+  if (videoItems.length === 0) {
+    // House-scoped empty state needs its own copy, not the default feed's
+    // literal copy reused verbatim (Houses navigation plan, U5 Test
+    // scenarios): "Upload to get started" misleads a built-in-House visitor
+    // (department membership is derived from `department`, unrelated to
+    // uploading) and a non-owner visitor of someone else's custom House
+    // (membership is curated only by its owner). The custom House's own
+    // owner instead sees copy pointing at the manage-members view, since
+    // that's the actual actionable next step for them specifically.
+    const empty: { title: string; subtitle: string; href: string | null; linkLabel: string } = (() => {
+      if (houseScope === null) {
+        return { title: "No videos yet.", subtitle: "Upload filmmaking content to get started.", href: null, linkLabel: "" };
+      }
+      if (houseScope.kind === "custom" && houseScope.isOwner) {
+        return {
+          title: "No members yet.",
+          subtitle: "Add creators or videos to get started.",
+          href: `/houses/${houseScope.id}`,
+          linkLabel: "Manage members",
+        };
+      }
+      return { title: "No videos in this House yet.", subtitle: "", href: null, linkLabel: "" };
+    })();
+    return (
+      <div style={{ textAlign: "center", paddingTop: "80px", color: "var(--fg-muted)" }}>
+        <p style={{ fontSize: "16px", fontWeight: 500 }}>{empty.title}</p>
+        {empty.subtitle && (
+          <p style={{ fontSize: "13px", marginTop: "6px" }}>{empty.subtitle}</p>
+        )}
+        {empty.href && (
+          <Link href={empty.href} style={{ fontSize: "13px", marginTop: "10px", display: "inline-block", color: "var(--accent)", fontWeight: 600, textDecoration: "none" }}>
+            {empty.linkLabel} →
+          </Link>
+        )}
+      </div>
+    );
+  }
 
   const currentItem = items[current];
   if (isDivider(currentItem)) setTimeout(() => goNext(), 600);

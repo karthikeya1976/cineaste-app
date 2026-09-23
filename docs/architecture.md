@@ -228,7 +228,7 @@ Returns `{overall_status, reasons}` written back to the DB row.
 | `/messages/compose` | `app/messages/compose/page.tsx` | Person search + new-chat compose flow, reached via the Conversations page's "New message" button or a creator profile's Message button |
 | `/messages/conversations/[conversationId]` | `app/messages/conversations/[conversationId]/page.tsx` | Thread view — per-message timestamps, day separators, and Copy/Reply/Report (received) or Edit/Reply/Copy (sent) action menus |
 | `/houses` | `app/houses/page.tsx` | Houses listing — "Departments" (built-in, derived from `DEPARTMENTS`) and "Custom Houses" (owned, curated) sections; tapping a card navigates into the House-scoped feed. Creators see a "Create a House" affordance with an inline name/description form that posts to `createHouse()` and navigates straight to the new House's manage view |
-| `/houses/[id]` | `app/houses/[id]/page.tsx` | Thin owner/non-owner branch for a custom House (KTD7) — a non-owner is `router.replace`'d straight to `/feed?house=<id>` with no intermediate screen; the owner sees a "View feed" link plus a Manage Members section. **U4 ships Manage Members as a labeled placeholder/skeleton only** ("Coming soon") — the real creator/video search-and-add and per-row remove UI is Implementation Unit U5's scope, built inside this same file |
+| `/houses/[id]` | `app/houses/[id]/page.tsx` | Thin owner/non-owner branch for a custom House (KTD7) — a non-owner is `router.replace`'d straight to `/feed?house=<id>` with no intermediate screen; the owner sees a "View feed" link plus a real Manage Members section (U5): Creators and Videos sub-sections, each with debounced search-as-you-type against the global `search()` endpoint (video search is cross-creator by design, KTD2a) and per-row remove, wired to U2's add/remove-member endpoints. Member lists are session-local — there is no "list current members" endpoint, only counts (`GET /houses`) and an undifferentiated unioned feed (`GET /houses/{id}/feed`) |
 
 `/messages` itself redirects to `/messages/conversations` — there is no longer a standalone tab bar switching between New Message / Requests / Conversations views (removed in favor of landing directly on Conversations, with Requests reachable via a link and a pending-count badge).
 
@@ -275,6 +275,22 @@ frontend renders at most one section-label divider (the House/department
 name) instead of the Following/Recommended two-divider pattern. Both House
 feed routes run their rows through the same `_enrich()` transform `GET
 /feed` uses (job_id/pillars/presigned video_url) — see `## Houses` below.
+
+**Frontend wiring (U5):** `frontend/app/feed/page.tsx`'s default export is a
+thin `<Suspense fallback={null}><FeedPageInner /></Suspense>` shell (required
+by `useSearchParams()`, matching `app/messages/compose/page.tsx`'s existing
+pattern). `FeedPageInner`'s mount effect reads the `house` search param via
+`parseHouseParam` (`frontend/lib/houses.ts`, U3) and branches: `null` → the
+default `getFeed()` path, unchanged; otherwise → `getDepartmentHouseFeed()`
+or `getHouseFeed()` (plus a parallel `listHouses()` call to resolve a custom
+House's real name/owner, since no single-House GET endpoint exists). Because
+a House-scoped `items` list always starts with its one section-label divider
+at index 0, the existing divider-auto-skip (`setTimeout(goNext, 600)`) now
+fires unconditionally on every House-feed load — a brief ~600ms flash before
+the first video settles in. This is a known, accepted side effect, not a
+bug. The House-scoped empty state also has its own copy, distinct per
+owner/non-owner — see `docs/changelog.md`'s 2026-09-23 entry for the exact
+variants.
 
 ---
 

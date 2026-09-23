@@ -164,8 +164,16 @@
 - [x] One new `nav-bar.tsx` `NAV_ITEMS` entry (`Houses`, `Building2` icon, no `creatorOnly`) — existing active-highlight and badge-dot logic required no changes, confirmed via real-browser check on both `/houses` and `/houses/[id]`
 - [x] Verified via `tsc --noEmit` (clean), `eslint` (0 errors), all 171 Vitest tests passing, and real-browser Playwright checks (temporary install, removed after) — 31 assertions covering both sections rendering, card navigation, nav highlighting, the owner/non-owner branch, the placeholder's absence of functional add-member UI, and the create-form POST + redirect flow
 
-### Pending (later unit, per the plan)
-- [ ] U5: House-scoped feed wiring in `frontend/app/feed/page.tsx` (the `<Suspense>` restructure + `house` param branch), and the real manage-members add/remove UI inside `/houses/[id]/page.tsx`
+### Frontend: House-scoped feed + manage-members UI (U5) ✅
+- [x] `frontend/app/feed/page.tsx` — `<Suspense>` restructure: default export is now a thin `<Suspense fallback={null}><FeedPageInner /></Suspense>` shell (exact pattern match to `app/messages/compose/page.tsx`'s existing precedent), today's entire component body moved unchanged into `FeedPageInner`
+- [x] Mount effect branches on `useSearchParams().get("house")` via `parseHouseParam` (U3): `null` → existing `getFeed()` path, confirmed byte-for-byte unchanged; department → `getDepartmentHouseFeed()`; custom → `getHouseFeed()` + a parallel `listHouses()` call for the House's name/owner. Single `SectionDivider` (House/department name) instead of Following/Recommended (KTD4)
+- [x] `current` resets on House-scope change (covers client-side navigation between two House feeds without a remount)
+- [x] Divider-auto-skip (~600ms flash) becoming universal on House-scoped loads confirmed as a known, accepted side effect — verified it resolves cleanly, including for a single-video House
+- [x] House-scoped empty state has its own copy (non-owner: "No videos in this House yet."; the custom House's own owner: "No members yet." + a working link to the manage-members view) instead of reusing the default feed's upload-focused copy
+- [x] `frontend/app/houses/[id]/page.tsx` — real manage-members UI replaces U4's placeholder: Creators + Videos sections, `settings/privacy`'s confirmed add/remove pattern, debounced global `searchAll()` search for both add flows (video search is NOT self-scoped, per KTD2a), optimistic-after-success add/remove wired to U2's real endpoints
+- [x] Member lists are session-local by design (no "list current members" endpoint exists — `GET /houses` returns only counts, `GET /houses/{id}/feed` returns an undifferentiated unioned list) — documented as a real scope boundary, not an oversight
+- [x] Verified via `tsc --noEmit` (clean), `eslint` (0 errors), all 171 Vitest tests passing, a clean `next build` (confirms the `<Suspense>` restructure introduces no build/prerender failure), and real-browser Playwright checks (temporary install, removed after) run against a production (`next start`) server — 21/24 assertions pass outright; the remaining 3 are an unrelated, pre-existing console-error signature from `nav-bar.tsx`'s unstubbed realtime-ticket fetch, confirmed present on the plain default-feed scenario too (not a House-scoping regression)
+- [x] **Default `/feed` regression guard passed**: no `house` param renders identically to before this unit — correct section label, correct video count, swipe gesture still advances correctly, no uncaught errors, no visible Suspense fallback flash
 
 ## Pending / Future
 - [ ] Creator profile: list their approved videos inline
