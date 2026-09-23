@@ -136,6 +136,32 @@ comments (
   body       TEXT,
   created_at TIMESTAMPTZ
 )
+
+-- Custom Houses (curated video collections; built-in department Houses
+-- are derived from users.department at query time and have no table)
+houses (
+  id          TEXT PRIMARY KEY,
+  owner_id    UUID REFERENCES users(id),
+  name        TEXT,
+  description TEXT,
+  created_at  TIMESTAMPTZ
+)
+
+-- House membership: whole creator catalogs (present + future uploads)
+house_creator_members (
+  house_id   TEXT REFERENCES houses(id),
+  creator_id UUID REFERENCES users(id),
+  added_at   TIMESTAMPTZ,
+  PRIMARY KEY (house_id, creator_id)
+)
+
+-- House membership: individually curated videos, independent of creator
+house_video_members (
+  house_id   TEXT REFERENCES houses(id),
+  video_id   TEXT REFERENCES videos(id),
+  added_at   TIMESTAMPTZ,
+  PRIMARY KEY (house_id, video_id)
+)
 ```
 
 `_ensure_schema()` runs on every API startup — all `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` are idempotent.

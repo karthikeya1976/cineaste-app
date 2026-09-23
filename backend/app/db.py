@@ -59,6 +59,34 @@ _CREATE_COMMENTS_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id)
 """
 
+_CREATE_HOUSES_TABLE = """
+CREATE TABLE IF NOT EXISTS houses (
+    id          TEXT PRIMARY KEY,
+    owner_id    UUID REFERENCES users(id),
+    name        TEXT NOT NULL,
+    description TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+_CREATE_HOUSE_CREATOR_MEMBERS_TABLE = """
+CREATE TABLE IF NOT EXISTS house_creator_members (
+    house_id   TEXT NOT NULL REFERENCES houses(id) ON DELETE CASCADE,
+    creator_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    added_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (house_id, creator_id)
+);
+"""
+
+_CREATE_HOUSE_VIDEO_MEMBERS_TABLE = """
+CREATE TABLE IF NOT EXISTS house_video_members (
+    house_id   TEXT NOT NULL REFERENCES houses(id) ON DELETE CASCADE,
+    video_id   TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    added_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (house_id, video_id)
+);
+"""
+
 
 
 def _connect():
@@ -76,6 +104,9 @@ def _ensure_schema() -> None:
             cur.execute(_CREATE_FOLLOWS_TABLE)
             cur.execute(_CREATE_COMMENTS_TABLE)
             cur.execute(_CREATE_COMMENTS_INDEX)
+            cur.execute(_CREATE_HOUSES_TABLE)
+            cur.execute(_CREATE_HOUSE_CREATOR_MEMBERS_TABLE)
+            cur.execute(_CREATE_HOUSE_VIDEO_MEMBERS_TABLE)
             # Column migrations — safe to re-run because of IF NOT EXISTS
             cur.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS user_id TEXT")
             cur.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS file_hash TEXT")
