@@ -371,3 +371,22 @@ Product renamed a second time, from "Cineaste" to "Misence", across the same use
 - `tsc --noEmit` — clean. `eslint` — clean on every modified frontend file. `py_compile` — clean on both modified pillar files and `scripts/scan-repo.py`.
 - `scripts/scan-repo.py` run post-rename — 0 new issues (banner now reads "Misence — Repo Health Scan").
 - Repo-wide case-insensitive grep for "cineaste" confirms only this file's own historical dated entries remain.
+
+## 2026-09-23 — Long-Press Hint Affordance (fixes #32)
+
+The feed's long-press gesture (hold 3s to open the jump-to-video thumbnail strip, PR #28) had zero on-screen visual cue that it existed — the only affordance was a screen-reader-only hint, invisible to sighted users. Flagged in issue #32 as an accepted-but-unaddressed tradeoff.
+
+- **The cue**: a subtle pulsing ring (56px circle, `rgba(255,255,255,0.55)` border) centered on the card, shown only for the first `LONG_PRESS_HINT_VIDEO_COUNT` (3) videos of a session — matches the issue's own suggested direction ("a subtle pulsing ring or small icon, shown only on the first N videos of a session"). Additive to `SwipeCard`'s existing overlay layer; does not touch the swipe-hint-arrow (`isFirst`/`isLast`) logic at all.
+- **Dismissal, two independent paths, both required by the acceptance criteria**: (1) the cue simply stops rendering once `videoIdx >= 3` within a single sitting, and (2) it's dismissed for the rest of the session the moment the user actually long-presses (`openThumbnailStrip` now also calls `markLongPressHintDismissed()`, writing a `sessionStorage` flag) — so a user who's already discovered the gesture never sees it again this session, even if they scroll back to video 1.
+- **`prefers-reduced-motion`**: reads the same way `ThumbnailStrip.tsx` already does (`window.matchMedia`); under reduced motion the ring renders as a static circle at fixed `opacity: 0.55` with no `animation` and the `<style>` keyframe block isn't even injected, rather than just disabling the animation property on an otherwise-present stylesheet.
+- **Session-flag mechanism is new, minimal infrastructure** — `frontend/app/feed/page.tsx` had no first-run/session-flag mechanism before this fix (confirmed via search, matching the issue's own Notes section). Follows the exact `sessionStorage`-gated idiom `frontend/lib/gatekept-api.ts`'s `ensureRegistered()` already established elsewhere in this codebase, including the same fail-toward-hidden posture if storage is blocked (private browsing, etc.) rather than crashing.
+- Keyframe styling (`<style>{...}@keyframes long-press-hint-pulse...</style>`) follows this codebase's existing plain-`<style>`-tag pulse-animation precedent (`app/search/page.tsx`, `app/houses/[id]/page.tsx`, `app/messages/compose/page.tsx` all use the identical pattern for their own loading-dot pulses) rather than introducing a new animation approach.
+
+### Verification
+- `tsc --noEmit` — clean. `eslint` — clean on `app/feed/page.tsx`.
+- Real-browser check (Playwright, temporary install + full removal after — this codebase's established discipline for gesture-adjacent UI, per the issue's own explicit acceptance criterion): ran against a genuinely local backend + seeded videos (a stale `frontend/.env.local` from earlier local-dev work was pointing the dev proxy at the real production EC2 API instead of `localhost:8088` — caught mid-verification when a screenshot showed a real production account instead of the seeded test data; moved the file aside for the duration of the check, restored it afterward, seeded rows deleted from the shared local Postgres volume).
+- Confirmed via screenshot: the ring is visible mid-pulse-cycle on video 1/5 (a screenshot taken during the animation's near-zero-opacity phase initially looked like a false negative — resolved by inspecting the DOM directly, which confirmed the element and its `animation-name` were correctly present and running; a second screenshot timed earlier in the cycle shows it clearly).
+- Confirmed absent past video 3 (video 4/5 has no ring).
+- Confirmed it reappears on navigating back to video 1 (not a permanent one-time dismissal just from scrolling past the gate).
+- Confirmed permanently dismissed (ring absent even back on video 1, `sessionStorage` flag set to `"1"`) after triggering the strip once via the existing Enter-key equivalent.
+- Confirmed the reduced-motion variant: static ring at fixed opacity, no `<style>` keyframe tag injected, screenshotted directly.
