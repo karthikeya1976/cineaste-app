@@ -62,7 +62,7 @@ mixed-content blocks, no CORS preflight). Locally, the rewrite targets
 
 **Auth**
 - `POST /auth/register` — create account (`viewer` by default)
-- `POST /auth/login` — returns JWT
+- `POST /auth/login` — returns a JWT (HS256, `sub` = user id) that now carries a real 24h `exp` claim — every token issued before this fix never expired at all. `JWT_SECRET` has no hardcoded fallback: the app raises `RuntimeError` at import time if it's unset, matching `config.py`'s `POSTGRES_URL` pattern.
 - `POST /auth/upgrade` — viewer → creator (requires JWT + department)
 
 **Videos**
@@ -509,6 +509,30 @@ doesn't reproduce the bug — it dispatches events differently).
 | Vercel | Next.js | `https://distributed-video-moderation.vercel.app` |
 
 Defined in `infra/cloudformation.yml`. EC2 systemd services: `redactor-api` and `redactor-celery`.
+
+---
+
+## CI/CD Pipeline & Security Gate
+
+`.github/workflows/pr-review-bot.yml` runs on every PR to `main`, five jobs:
+
+```
+lint-typecheck ──┬── artifact-scan ────┐
+                  ├── regression-tests ─┼── decision (review_bot.py)
+                  └── security-scan ────┘      │
+                                                 auto-merge (squash) only if
+                                                 ALL FOUR are exactly "success"
+```
+
+- **`lint-typecheck`** — frontend `npm run lint`/`npm run typecheck`, backend `py_compile` syntax check.
+- **`artifact-scan`** — production `next build`, then `scripts/verify_artifacts.py` confirms the build output isn't corrupted/incomplete.
+- **`regression-tests`** — runs `pytest tests/` and `vitest`, compares against `.ci/baseline-results.json` via `scripts/compare_baseline.py` (blocks only on NEW regressions vs. `main`, not pre-existing failures). Uses a `postgres:15-alpine` **service container** (GitHub Actions' native support) with `POSTGRES_URL`/`JWT_SECRET` set — without this, `test_houses.py`, `test_department_tags.py`, `test_feed_ranking.py`, and `test_auth_security.py` (92 of 112 local tests) silently `pytest.skip()` at collection, a real gap that existed from `test_houses.py`'s introduction until it was found and fixed alongside the security-scan job below.
+- **`security-scan`** — Python SAST (`bandit`), Python dependency CVEs (`pip-audit`), JS dependency CVEs (`npm audit --audit-level=high`). `scripts/security_gate.py` aggregates all three tools' JSON output and blocks only on **new** findings at or above `--min-severity` (default `high`) not already in `.ci/security-baseline.json` — the same "new regressions only" philosophy `compare_baseline.py` already uses for tests, applied to security findings. `.ci/security-baseline.json` is a deliberately-reviewed acceptance record (finding id + written reason per entry, e.g. "interpolates a module-level constant, not user input" or "transitive dependency, no fix published yet") — never auto-generated, unlike the test baseline.
+- **`decision`** — `scripts/review_bot.py`, unchanged logic (accepts arbitrary `name=status` check arguments) — auto-merges only if `lint-typecheck`, `artifact-scan`, `regression-tests`, AND `security-scan` are all exactly `"success"`.
+
+`.github/workflows/update-baseline.yml` (push to `main`, non-blocking) refreshes `.ci/baseline-results.json` after every merge — this does **not** apply to `.ci/security-baseline.json`, which is hand-maintained only, since a security-acceptance record needs a human-reviewed reason per entry, not an automated snapshot.
+
+**Not yet included**: `gitleaks` (content-based secret scanning across a diff, not just `scripts/scan-repo.py`'s existing tracked-filename pattern check) — needs a GitHub App/license setup, tracked as a real follow-up.
 
 ---
 

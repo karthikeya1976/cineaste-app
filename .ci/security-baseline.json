@@ -1,0 +1,74 @@
+{
+  "bandit:B608:backend/app\\db.py:336": {
+    "reason": "update_job() interpolates COLUMN NAMES only (dict keys from internal call sites, e.g. {'status': 'done'} passed by other backend code, never raw HTTP input) into the SET clause; every VALUE is correctly parameterized via %s. Bandit's own confidence rating on this finding is LOW. Reviewed 2026-09-24."
+  },
+  "bandit:B608:backend/app\\db.py:455": {
+    "reason": "get_feed()'s f-string interpolates _RANKING_SCORE_SQL (built entirely from module-level numeric constants: CREDIT_WEIGHT, COMMENT_WEIGHT, RECENCY_WEIGHT, RECENCY_HALF_LIFE_HOURS) and a fixed dismissed_filter string literal -- never user input. Every actual query parameter still goes through %s placeholders. Reviewed 2026-09-24."
+  },
+  "bandit:B310:backend/app\\pillars\\adult_content.py:36": {
+    "reason": "urllib.request.urlopen() call targets a hardcoded https:// URL to the Sightengine API (api.sightengine.com) -- bandit's B310 is a generic advisory about urlopen's scheme flexibility (file://, custom schemes), not applicable here since the scheme is never attacker-controlled. Reviewed 2026-09-24."
+  },
+  "bandit:B310:backend/app\\pillars\\ai_deepfake.py:34": {
+    "reason": "Same as adult_content.py:36 -- hardcoded https:// URL to a fixed third-party API, scheme is not attacker-controlled. Reviewed 2026-09-24."
+  },
+  "pip-audit:pytest:PYSEC-2026-1845": {
+    "reason": "Dev/test-only dependency, never shipped to production or exposed to untrusted input -- pytest is not imported by any runtime application code (app/main.py, app/db.py, etc.), only by the test suite itself. Fix requires a pytest 9.x major-version bump; deferred to its own PR to avoid bundling a test-runner upgrade with security-gate infrastructure. Track separately."
+  },
+  "pip-audit:starlette:PYSEC-2026-1941": {
+    "reason": "Transitive pin via fastapi==0.115.6. Fixing requires bumping FastAPI itself (a larger, separately-testable change with real API-compatibility risk) -- deferred to its own PR, not bundled with this security-gate infrastructure PR. Track separately."
+  },
+  "pip-audit:starlette:PYSEC-2026-1942": {
+    "reason": "Same as PYSEC-2026-1941 -- transitive via fastapi==0.115.6, deferred to a dedicated FastAPI-upgrade PR."
+  },
+  "pip-audit:starlette:PYSEC-2026-161": {
+    "reason": "Same as PYSEC-2026-1941 -- transitive via fastapi==0.115.6, deferred to a dedicated FastAPI-upgrade PR."
+  },
+  "pip-audit:starlette:PYSEC-2026-2281": {
+    "reason": "Same as PYSEC-2026-1941 -- transitive via fastapi==0.115.6, deferred to a dedicated FastAPI-upgrade PR."
+  },
+  "pip-audit:starlette:PYSEC-2026-2280": {
+    "reason": "Same as PYSEC-2026-1941 -- transitive via fastapi==0.115.6, deferred to a dedicated FastAPI-upgrade PR."
+  },
+  "pip-audit:starlette:PYSEC-2026-249": {
+    "reason": "Same as PYSEC-2026-1941 -- transitive via fastapi==0.115.6, deferred to a dedicated FastAPI-upgrade PR."
+  },
+  "pip-audit:starlette:PYSEC-2026-248": {
+    "reason": "Same as PYSEC-2026-1941 -- transitive via fastapi==0.115.6, deferred to a dedicated FastAPI-upgrade PR."
+  },
+  "pip-audit:ecdsa:PYSEC-2026-1325": {
+    "reason": "Transitive dependency of python-jose[cryptography]. No fix version published by the ecdsa maintainers as of this baseline entry -- nothing to bump to yet. Re-evaluate when a fix ships."
+  },
+  "pip-audit:pyasn1:PYSEC-2026-2263": {
+    "reason": "Transitive dependency pinned by python-jose[cryptography]==3.4.0's own dependency spec, not directly controllable from this repo's requirements.txt without risking an incompatibility python-jose doesn't itself expect. Track alongside the python-jose maintainers' own pyasn1 pin."
+  },
+  "pip-audit:pyasn1:PYSEC-2026-3456": {
+    "reason": "Same as PYSEC-2026-2263 -- transitive via python-jose[cryptography]."
+  },
+  "pip-audit:pyasn1:PYSEC-2026-3457": {
+    "reason": "Same as PYSEC-2026-2263 -- transitive via python-jose[cryptography]."
+  },
+  "pip-audit:pyasn1:PYSEC-2026-3455": {
+    "reason": "Same as PYSEC-2026-2263 -- transitive via python-jose[cryptography]."
+  },
+  "npm-audit:brace-expansion": {
+    "reason": "Transitive build-tooling dependency (not shipped to the browser bundle). DoS via crafted glob patterns -- not reachable with user-controlled input in this app's build process."
+  },
+  "npm-audit:browserslist": {
+    "reason": "Transitive build-tooling dependency (Next.js/PostCSS toolchain), not shipped to the browser bundle or reachable with runtime user input."
+  },
+  "npm-audit:js-yaml": {
+    "reason": "Transitive build-tooling dependency, not shipped to the browser bundle or reachable with runtime user input."
+  },
+  "npm-audit:nanoid": {
+    "reason": "Transitive build-tooling dependency. The 'non-secure generator' finding concerns nanoid's ID generation with attacker-controlled negative size, which this app's build tooling never calls with user input."
+  },
+  "npm-audit:next": {
+    "reason": "Critical: Next.js middleware/proxy bypass under Turbopack with a single-locale App Router config. This app does not use Turbopack in production (next build uses the default Webpack compiler) and has no i18n/locale routing configured -- the specific vulnerable configuration does not apply here. Still worth a dedicated Next.js version-bump PR since this is the most consequential finding in this baseline; not deferred casually, deferred deliberately to avoid bundling a framework upgrade with security-gate infrastructure."
+  },
+  "npm-audit:postcss": {
+    "reason": "Transitive build-tooling dependency (Tailwind's PostCSS pipeline) -- the XSS-via-unescaped-</style> finding concerns PostCSS's own CSS stringification of attacker-controlled CSS, never exercised here since this app's CSS is authored, not user-generated."
+  },
+  "npm-audit:sharp": {
+    "reason": "Transitive dependency of Next.js's image optimization pipeline (libvips CVEs). This app does not currently use next/image for any user-uploaded content path -- re-evaluate if/when it does."
+  }
+}

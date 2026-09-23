@@ -1,7 +1,20 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-python-multipart==0.0.20
+python-multipart==0.0.32
 celery==5.4.0
 redis==5.2.1
 psycopg2-binary==2.9.10
 pytest==8.3.4
+# Previously installed ad hoc only (EC2 CloudFormation UserData,
+# infra/cloudformation.yml) but never listed here — meaning a plain
+# `pip install -r requirements.txt` (e.g. in CI) could not actually import
+# app.main at all, since main.py/storage.py/config.py import all four of
+# these directly. Found via a security-scan-gate audit of the real CI
+# pipeline; bcrypt is pinned because passlib 1.7.4 cannot detect newer
+# bcrypt releases' version string and CryptContext.hash() fails outright —
+# confirmed locally, same pin CloudFormation's UserData already uses.
+python-jose[cryptography]==3.4.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+boto3==1.35.71
+python-dotenv==1.2.2

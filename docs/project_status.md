@@ -205,6 +205,19 @@
 - [x] `tests/test_feed_ranking.py` — 28 new tests against a live Postgres; full existing suite (106 total) passes with no regressions
 - [ ] Not yet deployed to EC2 / verified live
 
+### Security Hardening: Phase 0 (JWT Fixes) + Phase 1 (CI Security Agent) ✅
+- [x] JWTs now carry a real `exp` claim (24h) — previously never expired
+- [x] `JWT_SECRET`'s hardcoded fallback removed; app fails to start loudly if unset
+- [x] New `security-scan` CI job (bandit + pip-audit + npm audit) wired into `pr-review-bot.yml`, parallel to the existing jobs, required for auto-merge
+- [x] `scripts/security_gate.py` — new-findings-only gate against a reviewed `.ci/security-baseline.json`, same philosophy as the existing test-regression baseline
+- [x] Found and fixed a real pre-existing CI gap: `regression-tests` never set `POSTGRES_URL`, so 92 of 112 local tests silently skipped in CI on every run since `test_houses.py` was added — added a Postgres service container
+- [x] Found and fixed a real dependency-drift gap: `passlib`/`python-jose`/`boto3`/`python-dotenv` were used but never listed in `requirements.txt`
+- [x] Found and fixed a genuine CVE: `python-multipart` (handles every video upload) bumped 0.0.20 → 0.0.32, closing several parser-level DoS issues; `python-jose`/`python-dotenv` also bumped
+- [x] `tests/test_auth_security.py` — 6 new tests against a live Postgres
+- [ ] Phase 2 (RDS/ElastiCache/S3 encryption), Phase 3 (refresh tokens, httpOnly cookies), Phase 4 (GDPR/CCPA endpoints), Phase 5 (messaging E2E WASM spike) — not started, need AWS console access / maintenance windows / a dedicated research spike (see the published security plan doc for full scope)
+- [ ] `gitleaks` (content-based secret scanning) deferred — needs a GitHub App/license setup not provisionable from this session
+- [ ] Not yet deployed to EC2
+
 ## Pending / Future
 - [ ] Creator profile: list their approved videos inline
 - [ ] Notifications for new followers and credits received
