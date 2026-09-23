@@ -40,6 +40,13 @@ export type Job = {
   creator_name?: string;
   creator_department?: string;
   department_tags?: DepartmentTag[];
+  // Batch-fetched per-video engagement counts (credit_count/comment_count)
+  // and the current viewer's own credit state (credited) — see backend's
+  // _enrich() docstring. credited defaults to false server-side when
+  // there's no logged-in viewer, same as every other viewer-optional field.
+  credit_count?: number;
+  comment_count?: number;
+  credited?: boolean;
   video_url?: string | null;
   created_at: string;
   updated_at: string;
@@ -187,10 +194,27 @@ export async function getFeed(): Promise<FeedResponse> {
 
 // ── Credits ────────────────────────────────────────────────────────────────
 
-export async function giveCredit(jobId: string): Promise<{ credits: number }> {
-  const res = await fetch(`${API}/videos/${jobId}/credit`, { method: "POST" });
+// Requires login; toggles this viewer's own credit on/off (tap again to
+// un-credit) — replaces the old unauthenticated, non-deduplicated version.
+export async function toggleCredit(jobId: string): Promise<{ credited: boolean; credits: number }> {
+  const token = getToken();
+  const res = await fetch(`${API}/videos/${jobId}/credit`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
   if (!res.ok) throw new Error("Credit failed");
   return res.json();
+}
+
+// "Not interested" — hides this video from the caller's own feed going
+// forward. Per-video only, requires login.
+export async function dismissVideo(jobId: string): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${API}/videos/${jobId}/dismiss`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Dismiss failed");
 }
 
 // ── Follow ─────────────────────────────────────────────────────────────────

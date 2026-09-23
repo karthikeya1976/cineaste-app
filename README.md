@@ -113,8 +113,9 @@ Content   (Sightengine) Content    Relevance
 | DELETE | `/videos/{job_id}/departments/{department}` | JWT (owner) | Remove one additional department tag (no-op if targeting the primary) |
 | GET | `/videos/{job_id}/comments` | — | List comments |
 | POST | `/videos/{job_id}/comments` | JWT (query param) | Post a comment |
-| POST | `/videos/{job_id}/credit` | — | Give a credit to the creator |
-| GET | `/feed` | JWT optional | Smart feed `{enrouted, recommended}` |
+| POST | `/videos/{job_id}/credit` | JWT | Toggle this viewer's credit on a video (per-user, deduplicated) |
+| POST | `/videos/{job_id}/dismiss` | JWT | "Not interested" — hide this video from the caller's own feed |
+| GET | `/feed` | JWT optional | Smart feed `{enrouted, recommended}` — enrouted is chronological, recommended is ranked by a weighted engagement score |
 | GET | `/search?q=` | — | Search creators + videos |
 | GET | `/creators/{id}` | JWT optional | Creator profile + follow state |
 | POST | `/creators/{id}/follow` | JWT | Enroute a creator |
@@ -148,6 +149,12 @@ house_video_members    (house_id TEXT, video_id TEXT, added_at)    -- PK both co
 -- Exactly one is_primary=TRUE row per video, DB-enforced via a partial
 -- unique index (idx_video_dept_tags_one_primary ON video_id WHERE is_primary).
 video_department_tags  (video_id TEXT, department, is_primary BOOLEAN, tagged_at)  -- PK (video_id, department)
+
+-- Per-user, per-video credit toggle (replaces the old users.credits-only
+-- counter, which is now a frozen historical total, no longer written to).
+video_credits      (video_id TEXT, user_id UUID, created_at)  -- PK (video_id, user_id)
+-- "Not interested" — per-viewer video dismissal, excluded from both feed buckets.
+dismissed_videos   (user_id UUID, video_id TEXT, created_at)  -- PK (user_id, video_id)
 ```
 
 ---

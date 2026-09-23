@@ -71,7 +71,9 @@ mixed-content blocks, no CORS preflight). Locally, the rewrite targets
 - `GET /videos` — list all jobs (admin/debug use)
 
 **Feed & Discovery**
-- `GET /feed?token=<jwt>` — returns `{enrouted: Job[], recommended: Job[]}`. Enrouted = approved videos from followed creators ordered by recency. Recommended = all other approved videos ordered by `creator.credits DESC, created_at DESC`. Both buckets include presigned S3 URLs for streaming.
+- `GET /feed?token=<jwt>` — returns `{enrouted: Job[], recommended: Job[]}`. Enrouted = approved videos from followed creators, purely chronological. Recommended = all other approved videos ranked by a weighted engagement score (credits + comments + recency decay — see `## Feed Algorithm`). Both buckets exclude any video the viewer has dismissed ("not interested") and include presigned S3 URLs plus per-video engagement counts for streaming/display.
+- `POST /videos/{job_id}/credit` — JWT required; toggles this viewer's own credit on the video (credit once, tap again to un-credit). Per-user, deduplicated.
+- `POST /videos/{job_id}/dismiss` — JWT required; "not interested" — hides this video from the caller's own feed going forward.
 - `GET /search?q=<query>` — ILIKE search over creator names/departments and video filenames; returns `{creators, videos}`
 - `GET /creators/{id}?token=<jwt>` — creator profile with follower count, video count, credit total, and `is_following` for the viewer
 
@@ -186,6 +188,26 @@ video_department_tags (
 -- Partial unique index (not shown above): idx_video_dept_tags_one_primary
 -- ON video_department_tags (video_id) WHERE is_primary — makes a second
 -- primary row for the same video impossible to insert, even outside the app.
+
+-- Per-user, per-video credit toggle — replaces the old unauthenticated,
+-- undeduplicated users.credits-only counter. users.credits itself is left
+-- as a frozen historical total; get_creator_profile/search compute a LIVE
+-- sum from this table instead.
+video_credits (
+  video_id   TEXT REFERENCES videos(id) ON DELETE CASCADE,
+  user_id    UUID REFERENCES users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ,
+  PRIMARY KEY (video_id, user_id)
+)
+
+-- "Not interested" — per-viewer video dismissal, excluded from both feed
+-- buckets in get_feed via a NOT EXISTS anti-join.
+dismissed_videos (
+  user_id    UUID REFERENCES users(id) ON DELETE CASCADE,
+  video_id   TEXT REFERENCES videos(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ,
+  PRIMARY KEY (user_id, video_id)
+)
 ```
 
 `_ensure_schema()` runs on every API startup — all `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` are idempotent.
@@ -267,12 +289,14 @@ GET /feed?token=<jwt>
 2. If viewer_id:
    enrouted = SELECT videos JOIN follows
               WHERE follower_id = viewer_id
-              ORDER BY created_at DESC
+                AND NOT dismissed by viewer_id
+              ORDER BY created_at DESC   ← purely chronological, NOT ranked
 3. recommended = SELECT videos
                  WHERE id NOT IN (enrouted_ids)
-                 ORDER BY users.credits DESC, videos.created_at DESC
+                   AND NOT dismissed by viewer_id
+                 ORDER BY ranking_score DESC, created_at DESC
 4. Return {enrouted, recommended}
-   (both contain presigned S3 video_url)
+   (both contain presigned S3 video_url, credited/credit_count/comment_count)
 
 Frontend merges with section dividers:
   [Following]     ← enrouted bucket (if non-empty)
@@ -280,6 +304,29 @@ Frontend merges with section dividers:
   [Recommended]   ← recommended bucket (if non-empty)
   video, video, …
 ```
+
+**Ranking score (`recommended` bucket only)** — a right-sized version of a
+general feed/recommendation design doc's "weighted combination, not a single
+signal" principle: no ML model, no candidate-generation funnel (this app's
+scale doesn't call for either), just an explainable SQL formula Postgres
+sorts directly:
+
+```
+ranking_score = 3 * credit_count
+              + 2 * comment_count
+              + 1 * 0.5 ^ (age_hours / 48)     ← exponential recency decay,
+                                                   48h half-life (same family
+                                                   as Reddit/HN-style ranking)
+```
+
+`credit_count`/`comment_count` are NOT decayed by age — an old video still
+earning fresh engagement can still rank, which is the point: the OLD sort
+(`users.credits DESC` — a creator's lifetime total) meant a popular
+creator's oldest, most-forgotten video always outranked a brand-new great
+video from anyone else, since it ranked the CREATOR, not the video. The
+`enrouted` bucket deliberately does **not** use this score — a follow means
+"show me everything from this creator," so re-ranking it by engagement
+would bury a brand-new post behind an old popular one from the same person.
 
 **House-scoped feeds diverge from this shape** — `GET /houses/{house_id}/feed` and
 `GET /houses/department/{name}/feed` return a flat `{videos: Job[]}`, not the
@@ -432,6 +479,20 @@ off-screen (`COMMIT_MS`, 200ms) before the navigation callback fires; below
 threshold, it eases back to center (`SNAP_BACK_MS`, 220ms) instead of
 snapping instantly. Both mouse and touch are driven by the same Pointer
 Events handlers, so this behavior is uniform across desktop and mobile.
+
+**Nested interactive elements are excluded from gesture capture.**
+`onPointerDown` checks `e.target.closest("button, a, [role='button']")`
+before doing anything else — if the pointerdown originated on the card's own
+right-side action buttons or the Enroute pill, the handler returns
+immediately without calling `setPointerCapture()`. This was a real,
+previously-undiscovered bug affecting every action button (Credits,
+Comment, Share, Save, Not interested, Enroute): `setPointerCapture`, once
+called on the card's root, redirects every subsequent pointer/mouse event —
+including the eventual click — back to the capturing element regardless of
+where the cursor actually is (per the Pointer Events spec), so a click that
+visually landed on a button never reached it. Confirmed via raw
+mouse-coordinate click tracing, not Playwright's locator `.click()` (which
+doesn't reproduce the bug — it dispatches events differently).
 
 ---
 

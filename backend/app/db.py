@@ -134,6 +134,54 @@ WHERE u.department IS NOT NULL
 ON CONFLICT (video_id, department) DO NOTHING
 """
 
+# Per-video, per-user credit — replaces the old unauthenticated,
+# undeduplicated POST /videos/{id}/credit counter (which only ever
+# incremented users.credits with no way to know who credited what, or to
+# ever undo it). One row per (video_id, user_id): a user can credit a video
+# at most once, and can un-credit it (row deleted) — same toggle shape as
+# follows/house-membership tables elsewhere in this file. This is also what
+# makes a per-video engagement score (feed ranking) trustworthy: a lifetime
+# creator-level counter can't tell a genuinely good new video apart from an
+# old video by a creator who happened to accumulate credits years ago.
+_CREATE_VIDEO_CREDITS_TABLE = """
+CREATE TABLE IF NOT EXISTS video_credits (
+    video_id   TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (video_id, user_id)
+);
+"""
+
+_CREATE_VIDEO_CREDITS_VIDEO_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_video_credits_video_id ON video_credits(video_id)
+"""
+
+# "Not interested" — a viewer can dismiss one video from their own feed,
+# permanently, per the confirmed scope (per-video only, no creator-level
+# snooze). One row per (user_id, video_id); get_feed excludes any video the
+# viewer has dismissed via a NOT EXISTS anti-join, same pattern the
+# department-tag EXISTS join elsewhere in this file already establishes.
+_CREATE_DISMISSED_VIDEOS_TABLE = """
+CREATE TABLE IF NOT EXISTS dismissed_videos (
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    video_id   TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, video_id)
+);
+"""
+
+# Backfill: video_credits starts empty even though users.credits may already
+# hold nonzero lifetime totals from the old unauthenticated counter. Rather
+# than fabricate fake per-user credit rows for historical data with no real
+# per-user record (impossible — the old counter never recorded who credited
+# what), users.credits is left as a frozen historical total and the new
+# ranking score (get_feed) reads ONLY from video_credits going forward. This
+# means a creator's pre-existing lifetime credits total stays visible on
+# their profile but no longer feeds the ranking algorithm — a deliberate
+# behavior change, not an oversight: an unverifiable historical counter is
+# not a signal the new ranking formula should trust.
+
+
 
 
 def _connect():
@@ -157,6 +205,9 @@ def _ensure_schema() -> None:
             cur.execute(_CREATE_VIDEO_DEPARTMENT_TAGS_TABLE)
             cur.execute(_CREATE_VIDEO_DEPT_TAGS_PRIMARY_UNIQUE_INDEX)
             cur.execute(_CREATE_VIDEO_DEPT_TAGS_DEPARTMENT_INDEX)
+            cur.execute(_CREATE_VIDEO_CREDITS_TABLE)
+            cur.execute(_CREATE_VIDEO_CREDITS_VIDEO_INDEX)
+            cur.execute(_CREATE_DISMISSED_VIDEOS_TABLE)
             # Column migrations — safe to re-run because of IF NOT EXISTS
             cur.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS user_id TEXT")
             cur.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS file_hash TEXT")
@@ -316,12 +367,53 @@ def list_jobs(limit: int = 50) -> list[dict[str, Any]]:
     return result
 
 
+# Ranking score for the 'recommended' bucket — a right-sized version of the
+# weighted-combination principle from the feed/recommendation design doc,
+# without the ML infrastructure that doc assumes (no funnel, no learned
+# model — this app's real scale doesn't call for either). Combines three
+# signals, each normalized to a comparable range before weighting:
+#
+#   score = w_credit * credits
+#         + w_comment * comments
+#         + w_recency * recency_decay(age_hours)
+#
+# recency_decay halves every RECENCY_HALF_LIFE_HOURS (a classic
+# exponential-decay ranking shape, the same family as Reddit/Hacker News'
+# own front-page formulas) — chosen over a hard recency cutoff so a video's
+# rank degrades smoothly rather than falling off a cliff at some arbitrary
+# age boundary. credits and comments are NOT decayed by age: an old video
+# that's still earning fresh engagement should still be able to rank, which
+# is exactly the "old popular creator always wins" problem this replaces.
+#
+# All-SQL (no per-row Python scoring loop) so ORDER BY can push the sort
+# down to Postgres rather than fetching every candidate row into the app
+# just to sort it — the same "let the database do it" posture the rest of
+# this file's queries already take.
+RECENCY_HALF_LIFE_HOURS = 48
+CREDIT_WEIGHT = 3.0
+COMMENT_WEIGHT = 2.0
+RECENCY_WEIGHT = 1.0
+
+_RANKING_SCORE_SQL = f"""
+    ( {CREDIT_WEIGHT}  * COALESCE(vc.credit_count, 0)
+    + {COMMENT_WEIGHT} * COALESCE(cc.comment_count, 0)
+    + {RECENCY_WEIGHT} * POWER(0.5, EXTRACT(EPOCH FROM (NOW() - v.created_at)) / 3600.0 / {RECENCY_HALF_LIFE_HOURS})
+    )
+"""
+
+
 def get_feed(limit: int = 50, viewer_id: Optional[str] = None) -> dict[str, Any]:
     """Return the smart feed split into two buckets:
-    - 'enrouted': approved videos from creators the viewer follows (newest first)
-    - 'recommended': remaining approved videos ranked by creator credits + recency
+    - 'enrouted': approved videos from creators the viewer follows (newest first —
+      deliberately NOT ranked by the engagement score below: a follow is an
+      explicit signal the viewer wants to see this creator's work regardless
+      of how popular any single video is, so this bucket stays chronological)
+    - 'recommended': remaining approved videos ranked by a weighted engagement
+      score (credits + comments + recency decay — see _RANKING_SCORE_SQL)
 
-    If viewer_id is None (logged-out), only the recommended bucket is populated.
+    If viewer_id is None (logged-out), only the recommended bucket is
+    populated, and no dismissed-video filtering applies (dismissals are
+    per-user; a logged-out viewer has no dismissal history to exclude).
     """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -336,26 +428,50 @@ def get_feed(limit: int = 50, viewer_id: Optional[str] = None) -> dict[str, Any]
                     JOIN follows f ON f.following_id = u.id
                     WHERE v.overall_status IN ('approved', 'flagged')
                       AND f.follower_id = %s::uuid
+                      AND NOT EXISTS (
+                        SELECT 1 FROM dismissed_videos d
+                        WHERE d.video_id = v.id AND d.user_id = %s::uuid
+                      )
                     ORDER BY v.created_at DESC
                     LIMIT %s
-                """, (viewer_id, limit))
+                """, (viewer_id, viewer_id, limit))
                 enrouted = [dict(r) for r in cur.fetchall()]
 
             # Exclude already-enrouted video ids from recommendations
             enrouted_ids = tuple(r["id"] for r in enrouted) or ("",)
 
-            cur.execute("""
+            dismissed_filter = ""
+            params: list = [enrouted_ids]
+            if viewer_id:
+                dismissed_filter = """
+                  AND NOT EXISTS (
+                    SELECT 1 FROM dismissed_videos d
+                    WHERE d.video_id = v.id AND d.user_id = %s::uuid
+                  )
+                """
+                params.append(viewer_id)
+            params.append(limit)
+
+            cur.execute(f"""
                 SELECT v.*, u.name AS creator_name, u.department AS creator_department,
-                       u.credits AS creator_credits
+                       u.credits AS creator_credits,
+                       {_RANKING_SCORE_SQL} AS ranking_score
                 FROM videos v
                 JOIN users u ON v.user_id::uuid = u.id
+                LEFT JOIN (
+                    SELECT video_id, COUNT(*) AS credit_count
+                    FROM video_credits GROUP BY video_id
+                ) vc ON vc.video_id = v.id
+                LEFT JOIN (
+                    SELECT video_id, COUNT(*) AS comment_count
+                    FROM comments GROUP BY video_id
+                ) cc ON cc.video_id = v.id
                 WHERE v.overall_status IN ('approved', 'flagged')
                   AND v.id NOT IN %s
-                ORDER BY
-                    u.credits DESC,
-                    v.created_at DESC
+                  {dismissed_filter}
+                ORDER BY ranking_score DESC, v.created_at DESC
                 LIMIT %s
-            """, (enrouted_ids, limit))
+            """, params)
             recommended = [dict(r) for r in cur.fetchall()]
 
     def _normalise(rows: list[dict]) -> list[dict]:
@@ -370,6 +486,21 @@ def get_feed(limit: int = 50, viewer_id: Optional[str] = None) -> dict[str, Any]
         "enrouted": _normalise(enrouted),
         "recommended": _normalise(recommended),
     }
+
+
+def dismiss_video(user_id: str, video_id: str) -> None:
+    """'Not interested' — hide one video from this user's feed going
+    forward (per-video only, no creator-level snooze, per the confirmed
+    scope). Idempotent, matching this file's other toggle-membership
+    INSERT ... ON CONFLICT DO NOTHING precedent."""
+    sql = """
+        INSERT INTO dismissed_videos (user_id, video_id)
+        VALUES (%s::uuid, %s)
+        ON CONFLICT DO NOTHING
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (user_id, video_id))
 
 
 def create_user(name: str, email: str, password_hash: str) -> dict:
@@ -429,19 +560,84 @@ def find_duplicate_hash(file_hash: str, exclude_job_id: str) -> bool:
 
 
 # ── Credits ──────────────────────────────────────────────────────────────────
+# Per-video, per-user credit toggle — replaces the old unauthenticated,
+# undeduplicated add_credit() counter entirely (not kept alongside it: the
+# old counter has exactly one real caller, no tests reference it directly,
+# and running two parallel credit systems would be confusing with no
+# benefit — see the confirmed scope decision on this feature). users.credits
+# itself is left untouched as a frozen historical total (see
+# _CREATE_DISMISSED_VIDEOS_TABLE's neighboring comment) — nothing here
+# writes to it anymore.
 
-def add_credit(video_id: str) -> int:
-    """Add 1 credit to the creator of a video. Returns new credit total."""
-    sql = """
-        UPDATE users SET credits = credits + 1
-        WHERE id = (SELECT user_id::uuid FROM videos WHERE id = %s)
-        RETURNING credits
-    """
+def toggle_video_credit(video_id: str, user_id: str) -> dict:
+    """Credit a video if the user hasn't already; un-credit it if they have.
+    Returns {'credited': bool, 'credits': int} — the new state and the
+    video's total credit count after the toggle."""
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (video_id,))
-            row = cur.fetchone()
-    return row[0] if row else 0
+            cur.execute(
+                "SELECT 1 FROM video_credits WHERE video_id = %s AND user_id = %s::uuid",
+                (video_id, user_id),
+            )
+            already_credited = cur.fetchone() is not None
+
+            if already_credited:
+                cur.execute(
+                    "DELETE FROM video_credits WHERE video_id = %s AND user_id = %s::uuid",
+                    (video_id, user_id),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO video_credits (video_id, user_id) VALUES (%s, %s::uuid) "
+                    "ON CONFLICT DO NOTHING",
+                    (video_id, user_id),
+                )
+
+            cur.execute("SELECT COUNT(*) FROM video_credits WHERE video_id = %s", (video_id,))
+            total = cur.fetchone()[0]
+
+    return {"credited": not already_credited, "credits": total}
+
+
+def get_video_credit_state(video_id: str, user_id: str) -> bool:
+    """Whether user_id has already credited video_id — used to render the
+    star button's filled/unfilled state correctly on initial feed load,
+    fixing the pre-existing bug where 'credited' only ever reflected
+    same-session client state, never the real server-side record."""
+    sql = "SELECT 1 FROM video_credits WHERE video_id = %s AND user_id = %s::uuid"
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (video_id, user_id))
+            return cur.fetchone() is not None
+
+
+def get_engagement_counts_for_videos(video_ids: list[str]) -> dict[str, dict]:
+    """Batch-fetch {video_id: {'credits': int, 'comments': int}} for many
+    videos at once — same batching shape as get_department_tags_for_videos,
+    avoiding an N+1 query per feed card. Two separate COUNT-and-GROUP
+    queries (credits, comments) rather than one join, since joining both
+    many-to-one tables in a single query would multiply rows and require a
+    DISTINCT-count correction — simpler and just as fast at this data
+    volume to run them separately and merge in Python."""
+    if not video_ids:
+        return {}
+    out: dict[str, dict] = {vid: {"credits": 0, "comments": 0} for vid in video_ids}
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT video_id, COUNT(*) FROM video_credits WHERE video_id = ANY(%s) GROUP BY video_id",
+                (video_ids,),
+            )
+            for vid, count in cur.fetchall():
+                out[vid]["credits"] = count
+
+            cur.execute(
+                "SELECT video_id, COUNT(*) FROM comments WHERE video_id = ANY(%s) GROUP BY video_id",
+                (video_ids,),
+            )
+            for vid, count in cur.fetchall():
+                out[vid]["comments"] = count
+    return out
 
 
 # ── Follows ───────────────────────────────────────────────────────────────────
@@ -473,14 +669,21 @@ def is_following(follower_id: str, following_id: str) -> bool:
 
 
 def get_creator_profile(creator_id: str, viewer_id: Optional[str] = None) -> Optional[dict]:
-    """Return creator public profile with follower count, credit total, and follow status."""
+    """Return creator public profile with follower count, credit total, and
+    follow status. 'credits' is the LIVE sum of video_credits across all of
+    this creator's videos, not the frozen u.credits column — see
+    toggle_video_credit's module comment for why u.credits is no longer
+    written to (an unverifiable historical counter, not a real per-user
+    record) and must not be read as if it still reflects current totals."""
     sql = """
-        SELECT u.id, u.name, u.department, u.account_type, u.credits, u.created_at,
+        SELECT u.id, u.name, u.department, u.account_type, u.created_at,
                COUNT(DISTINCT f.follower_id) AS follower_count,
-               COUNT(DISTINCT v.id) AS video_count
+               COUNT(DISTINCT v.id) AS video_count,
+               COUNT(DISTINCT (vc.video_id, vc.user_id)) AS credits
         FROM users u
         LEFT JOIN follows f ON f.following_id = u.id
         LEFT JOIN videos v ON v.user_id::uuid = u.id AND v.overall_status IN ('approved','flagged')
+        LEFT JOIN video_credits vc ON vc.video_id = v.id
         WHERE u.id = %s::uuid
         GROUP BY u.id
     """
@@ -503,8 +706,11 @@ def search(query: str) -> dict:
     like = f"%{query}%"
 
     creator_sql = """
-        SELECT id, name, department, account_type, credits,
-               (SELECT COUNT(*) FROM follows WHERE following_id = u.id) AS follower_count
+        SELECT u.id, u.name, u.department, u.account_type,
+               (SELECT COUNT(*) FROM follows WHERE following_id = u.id) AS follower_count,
+               (SELECT COUNT(*) FROM video_credits vc
+                JOIN videos v ON v.id = vc.video_id
+                WHERE v.user_id::uuid = u.id) AS credits
         FROM users u
         WHERE (name ILIKE %s OR department ILIKE %s) AND account_type = 'creator'
         LIMIT 10
@@ -723,7 +929,7 @@ def get_house_feed(house_id: str) -> list[dict]:
 
     Both v.user_id::uuid casts are required: v.user_id is TEXT (ALTER TABLE
     migration), while u.id and house_creator_members.creator_id are UUID —
-    same cast pattern already used in get_feed/get_creator_profile/search/add_credit.
+    same cast pattern already used in get_feed/get_creator_profile/search/toggle_video_credit.
     """
     sql = """
         SELECT v.*, u.name AS creator_name, u.department AS creator_department
