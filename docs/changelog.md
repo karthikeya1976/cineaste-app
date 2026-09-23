@@ -357,3 +357,17 @@ Product renamed from "Editor Club" to "Cineaste" across all user-visible brandin
 - `tsc --noEmit` — clean. `eslint` — clean on every modified frontend file. `py_compile` — clean on both modified pillar files and `scripts/scan-repo.py`.
 - `scripts/scan-repo.py` run post-rename — 0 new issues (banner itself now reads "Cineaste — Repo Health Scan").
 - Full repo-wide case-insensitive grep for "editor club" / "editor-club" / "editorclub" confirms only the deliberately-preserved infra identifiers and historical dated entries remain.
+
+## 2026-09-23 — Renamed to Misence
+
+Product renamed a second time, from "Cineaste" to "Misence", across the same user-visible branding and doc/prose titles the prior rename touched. Same file set as the Editor Club → Cineaste rename (see entry immediately above), applied again.
+
+- **User-visible**: nav bar full name (`frontend/components/nav-bar.tsx`) and collapsed monogram ("Ci" → "M"); browser tab title (`frontend/app/layout.tsx`); login page brand heading (`frontend/app/page.tsx`); creator-profile bio fallback text; search page and messenger compose empty-state copy.
+- **Doc/prose titles**: `CLAUDE.md`, `README.md`, `docs/architecture.md`, `docs/moderation_policies.md`, `docs/project_status.md` top-level headers; `docs/private-notes.md` (untracked, local-only); `scripts/scan-repo.py`'s CLI description and banner output; prose code comments in `backend/app/pillars/duplicate_content.py`, `backend/app/pillars/filmmaking_relevance.py`, `frontend/lib/gatekept-api.ts`, `frontend/components/CryptoNotice.tsx`, `frontend/app/messages/compose/page.tsx`, `frontend/next.config.ts`.
+- **Deliberately NOT renamed** — same reasoning and same list as the prior rename: the live DNS hostname, systemd service names, CloudFormation resources, `redactor_token`/`redactor_user` localStorage keys, the DB password, the CI bot username, and dated historical changelog/project_status entries (including the "Renamed to Cineaste" entry above, which stays as an accurate record of that intermediate rename).
+- **GitHub repo**: renamed from `cineaste-app` to `misence-app` via `gh repo rename`, local remote updated to match, same as the prior rename. (The Vercel deployment domain is tracked separately, outside this repo — not part of this change.)
+
+### Verification
+- `tsc --noEmit` — clean. `eslint` — clean on every modified frontend file. `py_compile` — clean on both modified pillar files and `scripts/scan-repo.py`.
+- `scripts/scan-repo.py` run post-rename — 0 new issues (banner now reads "Misence — Repo Health Scan").
+- Repo-wide case-insensitive grep for "cineaste" confirms only this file's own historical dated entries remain.

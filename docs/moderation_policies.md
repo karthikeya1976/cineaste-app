@@ -1,4 +1,4 @@
-# Moderation Policies — Cineaste
+# Moderation Policies — Misence
 
 Each pillar module (`backend/app/pillars/`) exposes:
 

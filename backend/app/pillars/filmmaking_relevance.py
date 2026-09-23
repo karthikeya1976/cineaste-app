@@ -20,7 +20,7 @@ _RELEVANCE_THRESHOLD = 0.3
 
 # Labels Rekognition may return that indicate filmmaking or creative content.
 # Broad set covers: film gear, performance, narrative, creative arts, and
-# general human storytelling — all valid content for the Cineaste platform.
+# general human storytelling — all valid content for the Misence platform.
 _FILMMAKING_LABELS = {
     # Film & production gear
     "camera", "film", "movie", "cinema", "director", "cinematography",

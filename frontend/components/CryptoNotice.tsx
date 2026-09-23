@@ -4,9 +4,9 @@
 // user is about to send or read something they might reasonably assume is
 // encrypted, so the placeholder crypto is never silently passed off as real.
 //
-// Restyled from gatekept/web/components/CryptoNotice.tsx for Cineaste's
+// Restyled from gatekept/web/components/CryptoNotice.tsx for Misence's
 // design system: the source hardcoded light-theme Tailwind classes
-// (bg-amber-50/text-amber-900 with dark: variants) that don't fit Cineaste's
+// (bg-amber-50/text-amber-900 with dark: variants) that don't fit Misence's
 // single fixed dark palette (see frontend/app/globals.css — there is
 // no dark: variant system here). Uses the same CSS-variable-via-inline-style
 // convention as the rest of the app, with a warning-amber accent color kept

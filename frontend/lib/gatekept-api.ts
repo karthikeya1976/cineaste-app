@@ -1,6 +1,6 @@
 // Typed client for the Gatekept messaging backend (proxied same-origin via
 // /api/gatekept, see next.config.ts). Adapted from gatekept/web/lib/api.ts —
-// this build runs inside Cineaste's own session: it reads Cineaste's
+// this build runs inside Misence's own session: it reads Misence's
 // own JWT via getToken() (frontend/lib/auth.ts) instead of maintaining a
 // separate token/localStorage key, and talks to Gatekept's ID-keyed identity
 // routes (GET /keys/:userId/bundle) rather than the old handle-keyed ones —
@@ -67,7 +67,7 @@ export function getScannerBundle() {
 // ── First-use key registration ───────────────────────────────────────────
 //
 // POST /v1/identity/register-keys is the replacement for Gatekept's old
-// account creation: a logged-in Cineaste user's first messaging
+// account creation: a logged-in Misence user's first messaging
 // interaction registers their (placeholder) key material under their
 // already-verified identity — no client anywhere ever called this before
 // this fix, which meant NO user had a Gatekept-side row until they
@@ -318,9 +318,9 @@ export function fileReport(payload: {
   });
 }
 
-// ── Cineaste user search (find-people + name resolution) ───────────────────
+// ── Misence user search (find-people + name resolution) ───────────────────
 //
-// These two calls hit Cineaste's own FastAPI backend (via /api/backend,
+// These two calls hit Misence's own FastAPI backend (via /api/backend,
 // not /api/gatekept) — they're grouped here because they're part of the same
 // "find and identify people to message" flow, even though they're a
 // different origin under the hood.
@@ -332,7 +332,7 @@ export interface DirectoryUser {
 }
 
 /** GET /api/backend/search-users?q=... — searches all account_types (not
- *  just creators, unlike Cineaste's existing /search). Requires auth. */
+ *  just creators, unlike Misence's existing /search). Requires auth. */
 export async function searchUsers(q: string): Promise<DirectoryUser[]> {
   const token = getToken();
   const res = await fetch(`/api/backend/search-users?q=${encodeURIComponent(q)}`, {

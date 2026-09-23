@@ -1,4 +1,4 @@
-# Cineaste
+# Misence
 
 **A filmmaker discovery platform with AI-powered video moderation.**
 

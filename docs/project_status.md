@@ -1,4 +1,4 @@
-# Project Status — Cineaste
+# Project Status — Misence
 
 ## Phase 0: Environment Setup ✅
 - [x] Python 3.11+ installed and verified (3.12.10)

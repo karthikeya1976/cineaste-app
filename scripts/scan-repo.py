@@ -6,7 +6,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 """
-scripts/scan-repo.py — Cineaste repo health scanner.
+scripts/scan-repo.py — Misence repo health scanner.
 
 Checks for:
   1. Tracked .env / secret files (credentials committed to git)
@@ -276,7 +276,7 @@ def git_rm(paths: list[Path]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Cineaste repo health scanner")
+    parser = argparse.ArgumentParser(description="Misence repo health scanner")
     parser.add_argument("--fix", action="store_true",
                         help="Delete confirmed-dead files (asks for confirmation)")
     parser.add_argument("--dry-run", action="store_true",
@@ -284,7 +284,7 @@ def main() -> int:
     args = parser.parse_args()
 
     print(f"\n{'═'*60}")
-    print("  Cineaste — Repo Health Scan")
+    print("  Misence — Repo Health Scan")
     print(f"  Root: {REPO_ROOT}")
     print(f"{'═'*60}\n")
 

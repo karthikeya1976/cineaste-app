@@ -149,7 +149,7 @@ export default function CreatorProfilePage() {
         <p style={{ fontSize: "13px", color: "var(--fg-muted)", margin: 0 }}>
           {profile.department
             ? `${profile.name} is a filmmaker specialising in ${profile.department}.`
-            : `${profile.name} is a filmmaker on Cineaste.`}
+            : `${profile.name} is a filmmaker on Misence.`}
         </p>
         <p style={{ fontSize: "12px", color: "var(--fg-muted)", marginTop: "10px", opacity: 0.6 }}>
           {profile.credits} credit{profile.credits !== 1 ? "s" : ""} earned from the community
