@@ -153,10 +153,19 @@
 - [x] `tests/test_houses.py` — 36 new live-Postgres integration tests (House CRUD, feed union/dedup, department exact-match, membership idempotency, route-level 403/404/`_enrich()`-reuse); all pass alongside the pre-existing 14 `test_decision_engine.py` tests (50 total)
 - [x] `docs/architecture.md` — new `## Houses` section + route documentation + `## Feed Algorithm` divergence note; `README.md`'s API Reference table and Database Schema block updated to match
 
-### Pending (later units, per the plan)
-- [ ] U3: `frontend/lib/houses.ts` pure-logic module (`parseHouseParam`, `formatHouseMemberCount`) — already merged separately
-- [ ] U4: `/houses` listing page, `/houses/[id]` thin redirect, nav-bar entry
-- [ ] U5: House-scoped feed wiring in `frontend/app/feed/page.tsx`, manage-members UI
+### Frontend: pure-logic module (U3) ✅
+- [x] `frontend/lib/houses.ts` — `parseHouseParam` (the `"department:<name>"` vs. bare-custom-id discriminator behind KTD7) and `formatHouseMemberCount` (singular/plural, zero-half-omitted display formatting)
+- [x] `frontend/lib/houses.test.ts` — 9 Vitest tests, all passing
+
+### Frontend: listing page + detail route + nav entry (U4) ✅
+- [x] `/houses` (`app/houses/page.tsx`) — Departments + Custom Houses sections from `listHouses()`, tappable cards (department → `/feed?house=department:<name>`, custom → `/houses/[id]`), creator-only "Create a House" inline form posting to the real `createHouse()` client function
+- [x] `/houses/[id]` (`app/houses/[id]/page.tsx`) — owner vs. non-owner branch via `getUser()?.id` vs. the House's `owner_id`; non-owner `router.replace`s straight to `/feed?house=<id>` with no intermediate screen (KTD7); owner sees a working "View feed" link plus a Manage Members section
+- [x] Manage Members ships as a labeled placeholder/skeleton only in this unit ("Coming soon", no functional search/add/remove) — deliberate scope boundary so U5 can build the real interaction inside the same file without a merge conflict
+- [x] One new `nav-bar.tsx` `NAV_ITEMS` entry (`Houses`, `Building2` icon, no `creatorOnly`) — existing active-highlight and badge-dot logic required no changes, confirmed via real-browser check on both `/houses` and `/houses/[id]`
+- [x] Verified via `tsc --noEmit` (clean), `eslint` (0 errors), all 171 Vitest tests passing, and real-browser Playwright checks (temporary install, removed after) — 31 assertions covering both sections rendering, card navigation, nav highlighting, the owner/non-owner branch, the placeholder's absence of functional add-member UI, and the create-form POST + redirect flow
+
+### Pending (later unit, per the plan)
+- [ ] U5: House-scoped feed wiring in `frontend/app/feed/page.tsx` (the `<Suspense>` restructure + `house` param branch), and the real manage-members add/remove UI inside `/houses/[id]/page.tsx`
 
 ## Pending / Future
 - [ ] Creator profile: list their approved videos inline

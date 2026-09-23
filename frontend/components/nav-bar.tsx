@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { Home, Search, Upload, User, MessageCircle } from "lucide-react";
+import { Home, Search, Upload, User, MessageCircle, Building2 } from "lucide-react";
 import { isLoggedIn, isCreator } from "@/lib/auth";
 import { getRealtimeClient, type RealtimeEvent } from "@/lib/gatekept-ws";
 import { recordBadgeEvent, clearNavDot, isNavDotVisible, subscribeNavDot } from "@/lib/gatekept-notifications";
@@ -19,6 +19,7 @@ type NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { href: "/feed",     label: "Home",     icon: <Home          size={20} /> },
   { href: "/search",   label: "Search",   icon: <Search        size={20} /> },
+  { href: "/houses",   label: "Houses",   icon: <Building2     size={20} /> },
   { href: "/messages", label: "Messages", icon: <MessageCircle size={20} /> },
   { href: "/upload",   label: "Upload",   icon: <Upload        size={20} />, creatorOnly: true },
 ];
