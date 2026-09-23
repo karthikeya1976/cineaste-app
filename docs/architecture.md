@@ -420,6 +420,12 @@ logic — `classifyPointerUp`, `shouldCancelLongPress`):
   "metadata" muted>` elements, never touching the main player's) for
   jumping directly to any video in the feed. Selecting a thumbnail calls
   `setCurrent` directly and closes the strip.
+  **Discoverability cue (fixes #32):** a subtle pulsing ring overlay on the
+  card, shown only for the first `LONG_PRESS_HINT_VIDEO_COUNT` (3) videos
+  of a session, dismissed permanently for the session the moment the user
+  actually triggers a long-press (`sessionStorage`-flagged, following the
+  same session-gated idiom `lib/gatekept-api.ts`'s `ensureRegistered()`
+  already uses). Static (no animation) under `prefers-reduced-motion`.
 
 On release past the swipe/flick threshold, the card animates fully
 off-screen (`COMMIT_MS`, 200ms) before the navigation callback fires; below

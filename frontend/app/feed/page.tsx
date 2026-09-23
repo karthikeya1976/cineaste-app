@@ -25,6 +25,41 @@ import { ThumbnailStrip } from "@/components/ThumbnailStrip";
 // (see the "Bottom gradient + creator info" block below).
 const ICON_SHADOW = "drop-shadow(0 1px 3px rgba(0,0,0,0.85))";
 
+// Long-press discoverability cue (issue #32): the long-press-to-open
+// thumbnail strip has no on-screen affordance today — only a sr-only hint
+// (see SwipeCard's "Press Enter to jump to another video"). A subtle
+// pulsing-ring cue is shown on only the first LONG_PRESS_HINT_VIDEO_COUNT
+// videos of a session, and is dismissed for good the moment the user
+// actually long-presses (openThumbnailStrip) or once they've scrolled past
+// that many videos — it must never persist indefinitely or clutter every
+// video, per the issue's acceptance criteria. Session-scoped via
+// sessionStorage, matching lib/gatekept-api.ts's ensureRegistered() —
+// this file had no first-run/session-flag mechanism before this fix
+// (confirmed via search), so this is new, minimal, single-purpose state,
+// not a reused system.
+const LONG_PRESS_HINT_VIDEO_COUNT = 3;
+const LONG_PRESS_HINT_DISMISSED_KEY = "long_press_hint_dismissed";
+
+function readLongPressHintDismissed(): boolean {
+  if (typeof window === "undefined") return true; // SSR: default to hidden, matches the cue's own "no reduced-motion info yet" safety posture
+  try {
+    return sessionStorage.getItem(LONG_PRESS_HINT_DISMISSED_KEY) === "1";
+  } catch {
+    return true; // private-browsing/storage-blocked: fail toward not showing an animated cue, not toward crashing
+  }
+}
+
+function markLongPressHintDismissed(): void {
+  try {
+    sessionStorage.setItem(LONG_PRESS_HINT_DISMISSED_KEY, "1");
+  } catch {
+    // Storage blocked (private browsing, etc.) — the cue simply reappears
+    // on next video within the video-count gate for this session, which is
+    // a harmless degraded case, not a bug (same posture as this codebase's
+    // existing lib/pendingOutboundRequests.ts precedent for storage-optional UX).
+  }
+}
+
 function IconStar({ filled }: { filled: boolean }) {
   return (
     <svg width="28" height="28" viewBox="0 0 24 24" style={{ filter: ICON_SHADOW }}
@@ -466,6 +501,14 @@ function FeedPageInner() {
   const [commenting, setCommenting]     = useState(false);
   const [toast, setToast]               = useState("");
   const [stripOpen, setStripOpen]       = useState(false);
+  // Lazy initializer (not useEffect + setState) so the SSR render and the
+  // client's first render agree from the start — same hydration-mismatch
+  // avoidance already documented in profile/page.tsx and nav-bar.tsx for an
+  // identical class of localStorage/sessionStorage read. Defaults to
+  // dismissed=true during SSR (readLongPressHintDismissed's own guard),
+  // matching the client's very first paint, then the real session value
+  // takes over on hydration — no flash of the cue that then disappears.
+  const [longPressHintDismissed, setLongPressHintDismissed] = useState(readLongPressHintDismissed);
   // House-scoped empty-state copy needs to distinguish a non-owner visitor
   // from the custom House's own owner (Houses plan, U5 Test scenarios —
   // "the empty-state copy fix"). null = not house-scoped at all; otherwise
@@ -641,6 +684,12 @@ function FeedPageInner() {
       setPaused(true);
     }
     setStripOpen(true);
+    // A user who has actually discovered and used the long-press gesture
+    // once no longer needs the discoverability cue for the rest of this
+    // session (issue #32's "must not persist indefinitely" criterion) —
+    // dismissed permanently here, independent of the video-index gate below.
+    setLongPressHintDismissed(true);
+    markLongPressHintDismissed();
   }, [currentJob]);
 
   const jumpTo = useCallback((index: number) => {
@@ -755,6 +804,15 @@ function FeedPageInner() {
   const isFirst   = videoIdx === 0;
   const isLast    = videoIdx === videoItems.length - 1;
 
+  // Long-press discoverability cue (issue #32) — shown only for the first
+  // LONG_PRESS_HINT_VIDEO_COUNT videos of a session and never once dismissed
+  // (see openThumbnailStrip / markLongPressHintDismissed above).
+  const showLongPressHint = !longPressHintDismissed && videoIdx >= 0 && videoIdx < LONG_PRESS_HINT_VIDEO_COUNT;
+  const prefersReducedMotion =
+    typeof window !== "undefined" && window.matchMedia
+      ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      : false;
+
   return (
     <>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
@@ -819,6 +877,28 @@ function FeedPageInner() {
               color: "rgba(255,255,255,0.45)", fontSize: "18px", pointerEvents: "none",
               lineHeight: 1,
             }}>→</div>
+          )}
+
+          {/* Long-press discoverability cue (issue #32) — a small pulsing
+              ring centered on the card, shown only for the first
+              LONG_PRESS_HINT_VIDEO_COUNT videos of a session and dismissed
+              for good the moment the user actually long-presses. Static
+              (no animation) under prefers-reduced-motion, matching
+              ThumbnailStrip's existing reduced-motion handling elsewhere in
+              this same feature area. Purely decorative (pointerEvents:
+              "none") — it sits above the video but must never intercept the
+              tap/swipe/long-press gestures SwipeCard is already listening
+              for on the layer beneath it. */}
+          {showLongPressHint && (
+            <div style={{
+              position: "absolute", top: "50%", left: "50%",
+              transform: "translate(-50%, -50%)",
+              width: "56px", height: "56px", borderRadius: "50%",
+              border: "2px solid rgba(255,255,255,0.55)",
+              pointerEvents: "none",
+              animation: prefersReducedMotion ? "none" : "long-press-hint-pulse 1.8s ease-in-out infinite",
+              opacity: prefersReducedMotion ? 0.55 : undefined,
+            }} />
           )}
 
           {/* Bottom gradient + creator info.
@@ -941,6 +1021,16 @@ function FeedPageInner() {
             }}>{toast}</div>
           )}
         </SwipeCard>
+
+        {showLongPressHint && !prefersReducedMotion && (
+          <style>{`
+            @keyframes long-press-hint-pulse {
+              0%   { transform: translate(-50%, -50%) scale(0.85); opacity: 0.9; }
+              70%  { transform: translate(-50%, -50%) scale(1.35); opacity: 0; }
+              100% { transform: translate(-50%, -50%) scale(1.35); opacity: 0; }
+            }
+          `}</style>
+        )}
 
         {/* Counter below card — no buttons */}
         <p style={{ fontSize: "12px", color: "var(--fg-muted)", marginTop: "12px" }}>

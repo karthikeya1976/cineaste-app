@@ -188,6 +188,12 @@
 - [x] `tests/test_department_tags.py` — 26 new tests against a live disposable Postgres; `tests/test_houses.py` updated (fixture + stale local `DEPARTMENTS` list) with no other regressions across its 36 tests
 - [ ] Not yet deployed to EC2 / verified live
 
+### Long-Press Hint Affordance ✅ (fixes #32)
+- [x] Pulsing-ring visual cue on `SwipeCard`, shown only for the first 3 videos of a session
+- [x] Dismissed permanently for the session once the long-press is actually used, independent of the video-index gate
+- [x] Respects `prefers-reduced-motion` — static ring, no keyframe `<style>` injected under reduced motion
+- [x] Verified in a real browser (screenshots), including catching and working around a stale local `.env.local` that was silently pointing local dev at the production API mid-verification
+
 ## Pending / Future
 - [ ] Creator profile: list their approved videos inline
 - [ ] Notifications for new followers and credits received
