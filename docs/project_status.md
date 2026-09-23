@@ -132,6 +132,32 @@
 - [x] Velocity-based flick detection: a fast short drag advances even under the 40px distance threshold, tracked live move-to-move rather than at the final move-to-pointerup gap (which undercounts real flicks due to lift latency — found via real-browser timestamp logging, PR #30)
 - [x] All gesture/windowing logic verified via Vitest (`gestureClassifier.test.ts`, `feedItems.test.ts`) and real-browser Playwright checks (temporary installs, cleaned up after each PR)
 
+## Houses: Department Browsing + Custom Curated Collections (2026-09-22)
+
+### Schema (U1) ✅
+- [x] `houses` table: `id TEXT PK`, `owner_id UUID`, `name`, `description`, `created_at` — custom Houses only; built-in (one per department) have no table, derived from `users.department` at query time
+- [x] `house_creator_members` / `house_video_members` junction tables — composite PK, `ON DELETE CASCADE`, mirroring `follows`'s shape; FK typing (`UUID` for creator/owner references) verified correct against a live Postgres instance, not just assumed
+- [x] `docs/architecture.md`'s `### Database` block updated with all three tables
+
+### Backend API (U2) ✅
+- [x] `GET /houses` — built-in (hardcoded `DEPARTMENTS` list) + custom (with member counts)
+- [x] `GET /houses/department/{name}/feed` — built-in House feed, `::uuid`-cast join verified against live Postgres
+- [x] `GET /houses/{house_id}/feed` — custom House feed, unioned creator+video membership, dedup confirmed live (one `SELECT`, `OR`'d `WHERE`, no `UNION`/`DISTINCT` needed)
+- [x] Both feed routes reuse the exact `_enrich()` transform `GET /feed` already applies (extracted to a shared helper) — confirmed live that every House-feed video has `job_id`/`pillars`/a real presigned `video_url`, not the "No video available" failure mode a skipped enrich step would cause
+- [x] `POST /houses` (creator-only) / `DELETE /houses/{house_id}` (owner-only)
+- [x] `POST`/`DELETE /houses/{house_id}/members/creators/{creator_id}` and `.../videos/{video_id}` (owner-only)
+- [x] `_require_house_owner` — this codebase's first resource-ownership check (404 if missing, 403 if not owner), mirroring `_require_creator`'s shape
+- [x] Video-membership has **no** ownership check on the video's creator (KTD2a, deliberate) — confirmed live: an owner can curate a video from a completely unrelated creator into their House
+- [x] `POST /auth/upgrade` now validates `department` against the canonical `DEPARTMENTS` list (400 on case-mismatch/whitespace/unknown) — closes the gap where an invalid department silently breaks a creator's own built-in House with no error anywhere
+- [x] `frontend/lib/api.ts` typed client functions for every new endpoint
+- [x] `tests/test_houses.py` — 36 new live-Postgres integration tests (House CRUD, feed union/dedup, department exact-match, membership idempotency, route-level 403/404/`_enrich()`-reuse); all pass alongside the pre-existing 14 `test_decision_engine.py` tests (50 total)
+- [x] `docs/architecture.md` — new `## Houses` section + route documentation + `## Feed Algorithm` divergence note; `README.md`'s API Reference table and Database Schema block updated to match
+
+### Pending (later units, per the plan)
+- [ ] U3: `frontend/lib/houses.ts` pure-logic module (`parseHouseParam`, `formatHouseMemberCount`) — already merged separately
+- [ ] U4: `/houses` listing page, `/houses/[id]` thin redirect, nav-bar entry
+- [ ] U5: House-scoped feed wiring in `frontend/app/feed/page.tsx`, manage-members UI
+
 ## Pending / Future
 - [ ] Creator profile: list their approved videos inline
 - [ ] Notifications for new followers and credits received

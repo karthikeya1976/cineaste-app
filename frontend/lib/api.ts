@@ -247,3 +247,123 @@ export async function postComment(jobId: string, body: string): Promise<Comment>
   if (!res.ok) throw new Error("Post comment failed");
   return res.json();
 }
+
+// ── Houses ─────────────────────────────────────────────────────────────────
+// Built-in Houses (one per department) have no id/table — the Houses page
+// lists them by name only. Custom Houses are owned, curated entities.
+
+export type House = {
+  id: string;
+  owner_id: string;
+  name: string;
+  description?: string;
+  created_at: string;
+  creator_count?: number;
+  video_count?: number;
+};
+
+export type HousesListResponse = {
+  builtIn: { name: string }[];
+  custom: House[];
+};
+
+export type HouseFeedResponse = {
+  videos: Job[];
+};
+
+export async function listHouses(): Promise<HousesListResponse> {
+  const res = await fetch(`${API}/houses`);
+  if (!res.ok) throw new Error(`Houses fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function createHouse(
+  name: string,
+  description?: string
+): Promise<House> {
+  const token = getToken();
+  const res = await fetch(`${API}/houses`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ name, description }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail ?? "Create House failed");
+  }
+  return res.json();
+}
+
+export async function deleteHouse(houseId: string): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${API}/houses/${houseId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Delete House failed");
+}
+
+export async function getHouseFeed(houseId: string): Promise<HouseFeedResponse> {
+  const res = await fetch(`${API}/houses/${houseId}/feed`);
+  if (!res.ok) throw new Error(`House feed failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getDepartmentHouseFeed(
+  name: string
+): Promise<HouseFeedResponse> {
+  const res = await fetch(`${API}/houses/department/${encodeURIComponent(name)}/feed`);
+  if (!res.ok) throw new Error(`Department House feed failed: ${res.status}`);
+  return res.json();
+}
+
+export async function addHouseCreatorMember(
+  houseId: string,
+  creatorId: string
+): Promise<void> {
+  const token = getToken();
+  const res = await fetch(
+    `${API}/houses/${houseId}/members/creators/${creatorId}`,
+    { method: "POST", headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) throw new Error("Add creator member failed");
+}
+
+export async function removeHouseCreatorMember(
+  houseId: string,
+  creatorId: string
+): Promise<void> {
+  const token = getToken();
+  const res = await fetch(
+    `${API}/houses/${houseId}/members/creators/${creatorId}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) throw new Error("Remove creator member failed");
+}
+
+export async function addHouseVideoMember(
+  houseId: string,
+  videoId: string
+): Promise<void> {
+  const token = getToken();
+  const res = await fetch(
+    `${API}/houses/${houseId}/members/videos/${videoId}`,
+    { method: "POST", headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) throw new Error("Add video member failed");
+}
+
+export async function removeHouseVideoMember(
+  houseId: string,
+  videoId: string
+): Promise<void> {
+  const token = getToken();
+  const res = await fetch(
+    `${API}/houses/${houseId}/members/videos/${videoId}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) throw new Error("Remove video member failed");
+}
