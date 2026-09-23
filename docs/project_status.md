@@ -175,6 +175,19 @@
 - [x] Verified via `tsc --noEmit` (clean), `eslint` (0 errors), all 171 Vitest tests passing, a clean `next build` (confirms the `<Suspense>` restructure introduces no build/prerender failure), and real-browser Playwright checks (temporary install, removed after) run against a production (`next start`) server — 21/24 assertions pass outright; the remaining 3 are an unrelated, pre-existing console-error signature from `nav-bar.tsx`'s unstubbed realtime-ticket fetch, confirmed present on the plain default-feed scenario too (not a House-scoping regression)
 - [x] **Default `/feed` regression guard passed**: no `house` param renders identically to before this unit — correct section label, correct video count, swipe gesture still advances correctly, no uncaught errors, no visible Suspense fallback flash
 
+### Multi-Department Content Tagging ✅ (not yet deployed to EC2)
+- [x] New table `video_department_tags` (`video_id, department, is_primary, tagged_at`) — many-to-many, one primary tag (auto-derived from uploader's department at upload time, frozen after) plus up to `MAX_ADDITIONAL_DEPARTMENTS = 5` additional tags
+- [x] DB-enforced single-primary-per-video via a partial unique index (`WHERE is_primary`), not just application discipline
+- [x] Idempotent backfill in `_ensure_schema()` gives every pre-existing (zero-tag) video a primary tag from its creator's current department — added after this was caught as a real regression by the existing `test_houses.py` suite, not part of the original design
+- [x] `get_department_house_feed` rewritten to tag-based membership (`EXISTS` against `video_department_tags`) instead of joining to `users.department` — a video now surfaces in every department it's tagged into, not only its creator's home department
+- [x] `POST /videos` accepts an optional `departments` form field (additional tags only — primary is always server-derived, never client-supplied); validates against `DEPARTMENTS` and the max-additional cap
+- [x] `POST /videos/{id}/departments` / `DELETE /videos/{id}/departments/{department}` — owner-only, additional tags only; primary tag removal isn't reachable through either route, with a second defense-in-depth layer at the `db.py` level
+- [x] `_enrich()` batch-attaches `department_tags` to every feed row (no N+1)
+- [x] `frontend/app/upload/page.tsx` — locked primary-department chip + multi-select additional-department picker (primary excluded from its own option list); post-upload result card and status view both render the full tag set
+- [x] Found and fixed a real bug via live testing (not code review): FastAPI needs explicit `Form(...)` on a `str` parameter alongside `UploadFile`, or the field silently fails to bind and the intended validation never fires
+- [x] `tests/test_department_tags.py` — 26 new tests against a live disposable Postgres; `tests/test_houses.py` updated (fixture + stale local `DEPARTMENTS` list) with no other regressions across its 36 tests
+- [ ] Not yet deployed to EC2 / verified live
+
 ## Pending / Future
 - [ ] Creator profile: list their approved videos inline
 - [ ] Notifications for new followers and credits received

@@ -55,7 +55,14 @@ db._ensure_schema()
 
 DEPARTMENTS = [
     "Cinematography", "Directing", "Screenwriting", "Editing",
-    "Sound Design", "Visual Effects", "Production Design", "Acting", "Other",
+    "Sound Design", "Visual Effects", "Production Design", "Acting",
+    "Producing", "Camera", "Grip & Electric", "Art Department",
+    "Set Decoration", "Costume Design", "Hair & Makeup", "Sound Recording",
+    "Music", "Special Effects", "Stunts", "Casting",
+    "Production Management", "Script Supervision", "Choreography",
+    "Foley Artistry", "Storyboarding / Previsualization",
+    "Prosthetics & Creature Design", "Colorist / Post-Production",
+    "Animation", "Other",
 ]
 
 
@@ -98,7 +105,16 @@ def make_user(run_tag):
 def make_video(run_tag):
     """Factory: create a video row directly (bypassing S3/Celery — this file
     tests the House query/route layer, not the moderation pipeline) with a
-    given owner and overall_status. Tracks created ids for teardown."""
+    given owner and overall_status. Tracks created ids for teardown.
+
+    Also writes a primary department_tags row equal to the owner's current
+    users.department, mirroring what POST /videos actually does at upload
+    time (see backend/app/main.py's upload_video ->
+    db.set_video_department_tags). Required since get_department_house_feed
+    is now tag-based (multi-department content tagging feature): without
+    this, a fixture-created video would have zero tag rows and silently
+    vanish from every department feed, even the one matching its owner's own
+    department — this bit an earlier version of this fixture directly."""
     created_ids = []
 
     def _make(owner_id: str, overall_status="approved", filename=None):
@@ -106,6 +122,9 @@ def make_video(run_tag):
         fname = filename or f"{run_tag}-{len(created_ids)}.mp4"
         db.create_job(video_id, fname, f"s3://test-bucket/{video_id}.mp4", user_id=owner_id)
         db.update_job(video_id, {"status": "done", "overall_status": overall_status})
+        owner = db.get_user_by_id(owner_id)
+        if owner and owner.get("department"):
+            db.set_video_department_tags(video_id, owner["department"], [])
         created_ids.append(video_id)
         return video_id
 

@@ -171,6 +171,21 @@ house_video_members (
   added_at   TIMESTAMPTZ,
   PRIMARY KEY (house_id, video_id)
 )
+
+-- Multi-department content tagging: one row per (video, department) pairing.
+-- Drives built-in department House membership (see ## Houses) — a video
+-- surfaces in a department's feed because it has a tag row here, not because
+-- its creator's own users.department matches.
+video_department_tags (
+  video_id   TEXT REFERENCES videos(id) ON DELETE CASCADE,
+  department TEXT,
+  is_primary BOOLEAN DEFAULT FALSE,  -- exactly one TRUE row per video, DB-enforced
+  tagged_at  TIMESTAMPTZ,
+  PRIMARY KEY (video_id, department)
+)
+-- Partial unique index (not shown above): idx_video_dept_tags_one_primary
+-- ON video_department_tags (video_id) WHERE is_primary — makes a second
+-- primary row for the same video impossible to insert, even outside the app.
 ```
 
 `_ensure_schema()` runs on every API startup — all `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` are idempotent.
@@ -300,11 +315,16 @@ Two kinds of House, one browsing surface (the existing swipe feed, scoped):
 
 - **Built-in Houses** — one per department. No table: `GET
   /houses/department/{name}/feed` derives membership live via `SELECT ...
-  FROM videos JOIN users WHERE users.department = :name AND
-  videos.overall_status IN ('approved','flagged')`. The department list
-  (`DEPARTMENTS`) is duplicated backend-side in `main.py` from
-  `frontend/app/profile/page.tsx`'s constant of the same name — both lists
-  are short and human-maintained, kept in sync by hand. **`POST
+  FROM videos WHERE EXISTS (SELECT 1 FROM video_department_tags WHERE
+  video_id = videos.id AND department = :name) AND videos.overall_status IN
+  ('approved','flagged')` — membership is tag-based (`video_department_tags`,
+  see Multi-Department Content Tagging below), not derived from the
+  creator's own `users.department` (that was the original design; superseded
+  once a video could carry tags independent of its creator's home
+  department). The department list (`DEPARTMENTS`) is duplicated
+  backend-side in `main.py` from `frontend/app/profile/page.tsx`'s constant
+  of the same name (and a third synced copy in `app/upload/page.tsx`) — all
+  copies are short and human-maintained, kept in sync by hand. **`POST
   /auth/upgrade` validates `department` against this list (400 if no exact
   match)** — closes a gap where an unvalidated `department` string would
   otherwise leave a creator silently invisible to their own built-in House
@@ -329,6 +349,47 @@ Membership rows have no `overall_status` gate at write time, only at
 feed-read time — an owner can add a not-yet-approved video/creator; it
 simply won't render until (if ever) approved, per the feed queries' existing
 `overall_status` filter.
+
+---
+
+## Multi-Department Content Tagging
+
+A video's department is no longer solely inherited from its creator. At
+upload time, `POST /videos` writes one **primary** tag (always the
+uploader's current `users.department`, server-derived — never
+client-supplied, regardless of what the request sends) plus zero-to-`MAX_ADDITIONAL_DEPARTMENTS`
+(5) **additional** tags the creator explicitly selects, all into
+`video_department_tags`. A video appears in every tagged department's
+built-in House feed identically — no primary/additional distinction at feed
+read time, only in the tag's own `is_primary` flag.
+
+- **The primary tag can never be removed** — enforced by never exposing the
+  operation, not by rejecting it after the fact. `POST /videos/{id}/departments`
+  / `DELETE /videos/{id}/departments/{department}` (owner-only,
+  `_require_video_owner`) only ever add/remove additional tags. A second,
+  independent layer of defense lives in `db.py`:
+  `remove_video_department_tag` silently no-ops if the target row
+  `is_primary`, so the guarantee holds even against a direct DB-layer call
+  that bypasses the route entirely.
+- **Exactly one primary tag per video is a database constraint**, not
+  application discipline: a partial unique index
+  (`idx_video_dept_tags_one_primary ON video_department_tags (video_id)
+  WHERE is_primary`) makes a second primary row structurally impossible to
+  insert.
+- **The primary tag is frozen at upload time** — it does not live-track a
+  creator's `users.department` if they change it later. Existing videos'
+  primary tags are untouched by a subsequent department change.
+- **Backfill for pre-existing videos**: every video uploaded before this
+  feature shipped has zero tag rows. Since the department-feed query has no
+  fallback to `users.department` (see `## Houses` above), an idempotent
+  backfill in `_ensure_schema()` gives every untagged video a primary tag
+  from its creator's *current* department, `WHERE NOT EXISTS` so it can
+  never overwrite a tag set written after this feature shipped. Runs on
+  every startup.
+- **Validation**: additional departments are checked against the canonical
+  `DEPARTMENTS` list (400 on any unknown value) and capped at
+  `MAX_ADDITIONAL_DEPARTMENTS` (400 if exceeded) — same posture as
+  `POST /auth/upgrade`'s existing department validation.
 
 ---
 

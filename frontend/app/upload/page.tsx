@@ -3,7 +3,32 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { uploadVideo, getJobStatus, type Job } from "@/lib/api";
-import { isLoggedIn, isCreator } from "@/lib/auth";
+import { isLoggedIn, isCreator, getUser } from "@/lib/auth";
+
+// Kept as a third manually-synced copy of the canonical department list
+// (frontend/app/profile/page.tsx, backend/app/main.py) — matches this
+// project's established convention of short, human-maintained duplicated
+// lists rather than a shared source across the frontend/backend boundary.
+// MUST stay byte-for-byte identical: a mismatch here would offer an
+// "additional department" option the backend's /videos upload rejects
+// with a 400.
+const DEPARTMENTS = [
+  "Cinematography", "Directing", "Screenwriting", "Editing",
+  "Sound Design", "Visual Effects", "Production Design", "Acting",
+  "Producing", "Camera", "Grip & Electric", "Art Department",
+  "Set Decoration", "Costume Design", "Hair & Makeup", "Sound Recording",
+  "Music", "Special Effects", "Stunts", "Casting",
+  "Production Management", "Script Supervision", "Choreography",
+  "Foley Artistry", "Storyboarding / Previsualization",
+  "Prosthetics & Creature Design", "Colorist / Post-Production",
+  "Animation", "Other",
+];
+
+// Mirrors the backend's MAX_ADDITIONAL_DEPARTMENTS (backend/app/main.py) —
+// kept in sync manually like DEPARTMENTS above. Enforced here for immediate
+// UI feedback; the server re-validates independently (edge case: never trust
+// client-side enforcement alone).
+const MAX_ADDITIONAL_DEPARTMENTS = 5;
 
 const RESULT_STYLE: Record<string, React.CSSProperties> = {
   approved: { border: "1px solid #c2542344", background: "#c254230d" },
@@ -53,7 +78,24 @@ export default function UploadPage() {
   const [uploading, setUploading] = useState(false);
   const [error, setError]         = useState("");
   const [job, setJob]             = useState<Job | null>(null);
+  const [additionalDepts, setAdditionalDepts] = useState<string[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // The primary department is read once from the locally-cached user (set at
+  // login/upgrade) purely for display — it's never sent to the server as
+  // part of the upload. The server independently re-derives it from
+  // users.department at upload time (edge case: a stale/tampered client
+  // value here can never become the written primary tag).
+  const primaryDept = getUser()?.department ?? null;
+  const selectableDepts = DEPARTMENTS.filter(d => d !== primaryDept);
+
+  function toggleDept(d: string) {
+    setAdditionalDepts(prev =>
+      prev.includes(d)
+        ? prev.filter(x => x !== d)
+        : prev.length >= MAX_ADDITIONAL_DEPARTMENTS ? prev : [...prev, d]
+    );
+  }
 
   useEffect(() => {
     if (!isLoggedIn()) { router.replace("/"); return; }
@@ -74,7 +116,7 @@ export default function UploadPage() {
     if (!file) return;
     setError(""); setUploading(true); setJob(null);
     try {
-      const { task_id } = await uploadVideo(file);
+      const { task_id } = await uploadVideo(file, additionalDepts);
       pollRef.current = setInterval(async () => {
         const s = await getJobStatus(task_id);
         if (s.status === "done") {
@@ -147,6 +189,55 @@ export default function UploadPage() {
           })}
         </div>
       </div>
+
+      {/* Department tags */}
+      {primaryDept && (
+        <div style={{ marginBottom: "24px" }}>
+          <p style={{ fontSize: "12px", fontWeight: 600, color: "var(--fg-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "10px" }}>
+            Departments
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+            {/* Primary — locked, always included, cannot be toggled off */}
+            <span
+              title="Your home department — automatically tagged and cannot be removed"
+              style={{
+                display: "inline-flex", alignItems: "center", gap: "6px",
+                fontSize: "12.5px", fontWeight: 600, padding: "6px 12px",
+                borderRadius: "999px", background: "var(--accent)", color: "#fff",
+              }}
+            >
+              <span aria-hidden="true">🔒</span>
+              {primaryDept} — Main Department
+            </span>
+
+            {selectableDepts.map(d => {
+              const active = additionalDepts.includes(d);
+              const disabled = !active && additionalDepts.length >= MAX_ADDITIONAL_DEPARTMENTS;
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => toggleDept(d)}
+                  disabled={disabled}
+                  style={{
+                    fontSize: "12.5px", fontWeight: 600, padding: "6px 12px",
+                    borderRadius: "999px", cursor: disabled ? "not-allowed" : "pointer",
+                    background: active ? "var(--surface-2, var(--surface))" : "var(--surface)",
+                    border: active ? "1px solid var(--accent)" : "1px solid var(--border)",
+                    color: active ? "var(--fg)" : "var(--fg-muted)",
+                    opacity: disabled ? 0.4 : 1,
+                  }}
+                >
+                  {d}
+                </button>
+              );
+            })}
+          </div>
+          <p style={{ fontSize: "11px", color: "var(--fg-muted)", marginTop: "8px", opacity: 0.7 }}>
+            Optional — tag up to {MAX_ADDITIONAL_DEPARTMENTS} more departments this content is relevant to. It will appear in each tagged department&apos;s feed.
+          </p>
+        </div>
+      )}
 
       {/* Drop zone — shape matches selected format */}
       <div style={{ display: "flex", justifyContent: isClip ? "center" : "stretch" }}>
@@ -242,6 +333,24 @@ export default function UploadPage() {
               {status}
             </span>
           </div>
+
+          {job.department_tags && job.department_tags.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "14px" }}>
+              {job.department_tags.map(t => (
+                <span
+                  key={t.department}
+                  style={{
+                    fontSize: "11px", fontWeight: 600, padding: "4px 10px", borderRadius: "999px",
+                    background: t.is_primary ? "var(--accent)" : "var(--bg)",
+                    color: t.is_primary ? "#fff" : "var(--fg-muted)",
+                    border: t.is_primary ? "none" : "1px solid var(--border)",
+                  }}
+                >
+                  {t.is_primary ? "🔒 " : ""}{t.department}{t.is_primary ? " — Main" : ""}
+                </span>
+              ))}
+            </div>
+          )}
 
           {job.reasons && job.reasons.length > 0 && (
             <ul style={{ fontSize: "12px", color: "var(--fg-muted)", marginBottom: "14px", display: "flex", flexDirection: "column", gap: "4px" }}>

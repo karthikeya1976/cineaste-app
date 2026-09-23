@@ -87,6 +87,53 @@ CREATE TABLE IF NOT EXISTS house_video_members (
 );
 """
 
+# One row per (video, department) tag. is_primary marks the single tag that
+# was auto-derived from the uploader's department at upload time (frozen,
+# per the design doc's edge case: it does NOT live-track a creator's later
+# department changes). Enforcing "exactly one primary per video" as a DB
+# constraint (rather than app-level discipline alone) needs a partial unique
+# index, added below in _ensure_schema — CREATE TABLE can't express it inline
+# against future rows.
+_CREATE_VIDEO_DEPARTMENT_TAGS_TABLE = """
+CREATE TABLE IF NOT EXISTS video_department_tags (
+    video_id   TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    department TEXT NOT NULL,
+    is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+    tagged_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (video_id, department)
+);
+"""
+
+_CREATE_VIDEO_DEPT_TAGS_PRIMARY_UNIQUE_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_video_dept_tags_one_primary
+ON video_department_tags (video_id) WHERE is_primary
+"""
+
+_CREATE_VIDEO_DEPT_TAGS_DEPARTMENT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_video_dept_tags_department
+ON video_department_tags (department)
+"""
+
+# Backfill: every video uploaded before this feature shipped has zero rows in
+# video_department_tags. Since get_department_house_feed now requires a tag
+# row to match (not a fallback to users.department), an unpatched pre-
+# existing video would silently vanish from every built-in department feed
+# the moment this deploys — a real regression caught via test_houses.py's
+# existing suite, not anticipated in the original design doc. Backfill gives
+# each untagged video a primary tag equal to its creator's CURRENT
+# users.department, once, idempotently (WHERE NOT EXISTS — never touches a
+# video that already has any tag row, so it can't clobber real tags written
+# after this feature shipped). Re-run safe on every startup.
+_BACKFILL_MISSING_PRIMARY_TAGS = """
+INSERT INTO video_department_tags (video_id, department, is_primary)
+SELECT v.id, u.department, TRUE
+FROM videos v
+JOIN users u ON v.user_id::uuid = u.id
+WHERE u.department IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM video_department_tags t WHERE t.video_id = v.id)
+ON CONFLICT (video_id, department) DO NOTHING
+"""
+
 
 
 def _connect():
@@ -107,11 +154,15 @@ def _ensure_schema() -> None:
             cur.execute(_CREATE_HOUSES_TABLE)
             cur.execute(_CREATE_HOUSE_CREATOR_MEMBERS_TABLE)
             cur.execute(_CREATE_HOUSE_VIDEO_MEMBERS_TABLE)
+            cur.execute(_CREATE_VIDEO_DEPARTMENT_TAGS_TABLE)
+            cur.execute(_CREATE_VIDEO_DEPT_TAGS_PRIMARY_UNIQUE_INDEX)
+            cur.execute(_CREATE_VIDEO_DEPT_TAGS_DEPARTMENT_INDEX)
             # Column migrations — safe to re-run because of IF NOT EXISTS
             cur.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS user_id TEXT")
             cur.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS file_hash TEXT")
             cur.execute("ALTER TABLE users  ADD COLUMN IF NOT EXISTS credits INTEGER NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE users  ADD COLUMN IF NOT EXISTS department TEXT")
+            cur.execute(_BACKFILL_MISSING_PRIMARY_TAGS)
 
 
 
@@ -124,6 +175,95 @@ def create_job(job_id: str, filename: str, file_path: Optional[str] = None, user
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (job_id, filename, file_path, user_id, now, now))
+
+
+# ── Video department tags ───────────────────────────────────────────────────
+# video_department_tags is a many-to-many join: one video can carry a primary
+# tag (auto-derived from the uploader's department, frozen at upload time —
+# it does not live-track later department changes) plus zero-or-more
+# additional tags the creator explicitly selected. See docs/architecture.md
+# for the full design rationale (mitigation-plan doc / this feature).
+
+def set_video_department_tags(video_id: str, primary_department: str, additional_departments: list[str]) -> None:
+    """Write a video's full tag set in one transaction: the primary tag plus
+    every additional tag, deduplicated (a department appearing in both the
+    primary slot and the additional list collapses to just the primary row —
+    mirrors the design doc's edge case on primary/additional overlap).
+    Called once, at upload time, from inside the same INSERT flow as
+    create_job — never exposed as a standalone endpoint for the primary tag,
+    since the primary is server-derived, not client-writable (edge case:
+    server always sets it regardless of what the client sends)."""
+    additional = [d for d in dict.fromkeys(additional_departments) if d != primary_department]
+    rows = [(video_id, primary_department, True)] + [(video_id, d, False) for d in additional]
+    sql = """
+        INSERT INTO video_department_tags (video_id, department, is_primary)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (video_id, department) DO NOTHING
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(sql, rows)
+
+
+def get_video_department_tags(video_id: str) -> list[dict]:
+    """Return every department tag for one video, primary first."""
+    sql = """
+        SELECT department, is_primary, tagged_at
+        FROM video_department_tags
+        WHERE video_id = %s
+        ORDER BY is_primary DESC, tagged_at ASC
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (video_id,))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_department_tags_for_videos(video_ids: list[str]) -> dict[str, list[dict]]:
+    """Batch-fetch tags for many videos at once (feed rows), keyed by video_id —
+    avoids an N+1 query per card when enriching a feed/list response."""
+    if not video_ids:
+        return {}
+    sql = """
+        SELECT video_id, department, is_primary
+        FROM video_department_tags
+        WHERE video_id = ANY(%s)
+        ORDER BY is_primary DESC, tagged_at ASC
+    """
+    out: dict[str, list[dict]] = {vid: [] for vid in video_ids}
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (video_ids,))
+            for r in cur.fetchall():
+                out.setdefault(r["video_id"], []).append({"department": r["department"], "is_primary": r["is_primary"]})
+    return out
+
+
+def add_video_department_tag(video_id: str, department: str) -> None:
+    """Add one additional tag post-upload. Never used for the primary slot —
+    the route layer rejects is_primary changes before this is called
+    (edge case: primary removal/reassignment isn't an operation this layer
+    exposes at all, not just one that's blocked after the fact)."""
+    sql = """
+        INSERT INTO video_department_tags (video_id, department, is_primary)
+        VALUES (%s, %s, FALSE)
+        ON CONFLICT (video_id, department) DO NOTHING
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (video_id, department))
+
+
+def remove_video_department_tag(video_id: str, department: str) -> bool:
+    """Delete one tag row, but only if it is not the primary — returns False
+    (no-op) if the target row is_primary, so the guarantee holds even against
+    a direct DB-layer call, not only the route's own pre-check (defense in
+    depth for the 'primary can never be removed' rule)."""
+    sql = "DELETE FROM video_department_tags WHERE video_id = %s AND department = %s AND is_primary = FALSE"
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (video_id, department))
+            return cur.rowcount > 0
 
 
 def update_job(job_id: str, fields: dict[str, Any]) -> None:
@@ -610,20 +750,29 @@ def get_house_feed(house_id: str) -> list[dict]:
 
 
 def get_department_house_feed(department_name: str) -> list[dict]:
-    """Return every approved/flagged video from creators whose users.department
-    exactly matches department_name, newest first (built-in House, KTD1 — no
-    table, derived entirely from existing data).
+    """Return every approved/flagged video TAGGED into department_name, newest
+    first (built-in House). Membership now comes from video_department_tags
+    (primary or additional tag, no distinction at read time — see design doc's
+    Feed Display section) rather than solely from the creator's own
+    users.department. This is a deliberate behavior change from the
+    creator-department-only query this replaced: a video surfaces here if it
+    carries ANY tag matching this department, not only if its creator's home
+    department does.
 
-    The ::uuid cast on the join is required, not optional: videos.user_id is
-    TEXT while users.id is UUID — omitting the cast raises
-    'operator does not exist: text = uuid' at query time (confirmed via plan
-    review as a hard runtime failure). Mirrors get_feed's identical cast.
+    The ::uuid cast on the v.user_id join is required, not optional:
+    videos.user_id is TEXT while users.id is UUID — omitting it raises
+    'operator does not exist: text = uuid' at query time. Mirrors get_feed's
+    identical cast.
     """
     sql = """
         SELECT v.*, u.name AS creator_name, u.department AS creator_department
         FROM videos v
         JOIN users u ON v.user_id::uuid = u.id
-        WHERE u.department = %s AND v.overall_status IN ('approved', 'flagged')
+        WHERE v.overall_status IN ('approved', 'flagged')
+          AND EXISTS (
+            SELECT 1 FROM video_department_tags t
+            WHERE t.video_id = v.id AND t.department = %s
+          )
         ORDER BY v.created_at DESC
     """
     with _connect() as conn:
