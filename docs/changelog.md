@@ -294,3 +294,19 @@ Final unit of the Houses navigation plan — wires the existing swipe feed to re
 - `npx vitest run` — 171/171 tests pass, no regressions.
 - Byte-for-byte parity between the two `DEPARTMENTS` copies confirmed via a direct diff of the extracted quoted-string arrays from both files (not just visual comparison).
 - Real-browser check (Playwright, temporary install + removal, same discipline as every other unit this session): the profile page's department `<select>` renders all 29 options (28 departments + "Other") in the correct order, confirmed via reading the live DOM's `<option>` list, not just the source array. No layout break from the longer list — a native `<select>` handles this option count without any UI change needed.
+
+## 2026-09-23 — Department List Refined: Craft/Creativity Only
+
+Following user review of the previous department expansion, four departments judged to be logistics/support rather than hands-on craft or creative work were removed and replaced with four genuine, distinct craft roles — same total count (28 + "Other" = 29), no net change in list size.
+
+- **Removed** (logistics/support, not craft): Locations, Continuity, Transportation, Catering & Craft Services.
+- **Kept from the prior round** on explicit instruction despite initially being flagged as borderline: Production Management.
+- **Added** (real, distinct craft roles not already covered by the existing list): Choreography (dance/fight/movement direction — distinct from Stunts' physical-safety/execution focus), Foley Artistry (the hands-on sound-effects craft — distinct from Sound Design's conceptual work and Sound Recording's production capture), Storyboarding / Previsualization (a distinct visual-planning craft — distinct from Screenwriting/Directing), Prosthetics & Creature Design (a distinct sculptural/makeup-adjacent craft — distinct from Hair & Makeup and Special Effects).
+- Confirmed via the live backend (`GET /search?q=<removed department name>`, all four) that no real creator had selected any of the four removed departments in the few hours they were live, so no `users.department` value needed migrating.
+- Both copies of the list (frontend `DEPARTMENTS` constant, backend `DEPARTMENTS` constant) updated in lockstep and confirmed byte-for-byte identical via a direct diff, same discipline as the prior expansion.
+
+### Verification
+- `tsc --noEmit` — clean. `eslint` — 0 errors (same 3 pre-existing unrelated `<img>` warnings). `py_compile` on `backend/app/main.py` — clean.
+- `npx vitest run` — 171/171 tests pass, no regressions.
+- Byte-for-byte parity between both `DEPARTMENTS` copies confirmed via diff.
+- Real-browser check (Playwright, temporary install + removal): confirmed via the live DOM that all 4 removed departments are genuinely absent from the rendered `<select>`, all 4 new departments are present, `Production Management` is retained, and the total option count is exactly 29.
