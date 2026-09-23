@@ -84,7 +84,7 @@ Content   (Sightengine) Content    Relevance
 | `/messages/requests` | Logged-in | Incoming chat requests, including abusive-first-message banners |
 | `/messages/compose` | Logged-in | New chat: person search + compose |
 | `/houses` | Logged-in | Houses listing — Departments (built-in) + Custom Houses (owned/curated); creators can create a new House |
-| `/houses/[id]` | Logged-in | Custom House detail — non-owners are redirected straight to the House's feed; owners see a "View feed" link and a Manage Members section (add/remove UI ships in a later unit) |
+| `/houses/[id]` | Logged-in | Custom House detail — non-owners are redirected straight to the House's feed; owners see a "View feed" link and a Manage Members section (search-and-add + per-row remove for both creators and videos) |
 
 ---
 
