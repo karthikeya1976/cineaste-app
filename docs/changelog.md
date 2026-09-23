@@ -310,3 +310,35 @@ Following user review of the previous department expansion, four departments jud
 - `npx vitest run` — 171/171 tests pass, no regressions.
 - Byte-for-byte parity between both `DEPARTMENTS` copies confirmed via diff.
 - Real-browser check (Playwright, temporary install + removal): confirmed via the live DOM that all 4 removed departments are genuinely absent from the rendered `<select>`, all 4 new departments are present, `Production Management` is retained, and the total option count is exactly 29.
+
+## 2026-09-23 — Multi-Department Content Tagging
+
+A video's primary department was previously implicit — derived at read time by joining to its creator's `users.department`. Creators can now additionally tag an upload with up to 5 more departments it's relevant to (e.g. a Cinematography-primary short that's also Choreography and Costume Design relevant), and the video surfaces in every tagged department's built-in House feed, not only its creator's home department.
+
+### Data model
+- New table `video_department_tags` (`video_id, department, is_primary, tagged_at`, composite PK `(video_id, department)`). One row per (video, department) pairing — a genuine many-to-many join, not a column, since a video needs zero-to-many additional tags plus exactly one primary.
+- **DB-enforced, not just app-level discipline**: a partial unique index (`idx_video_dept_tags_one_primary ON video_department_tags (video_id) WHERE is_primary`) makes "more than one primary row per video" structurally impossible to write, even via a direct SQL insert that bypasses the application layer entirely.
+- The primary tag is written once, at upload time, from the uploader's *current* `users.department` — frozen from that point on. It does not live-track a creator's department if they change it later (verified via a dedicated test: upgrading a creator to a new department after upload leaves their existing videos' primary tags untouched).
+
+### Backfill — critical edge case caught via regression testing, not the original design
+Every video uploaded before this feature shipped has zero `video_department_tags` rows. Since `get_department_house_feed` is now tag-based with no fallback to `users.department`, an unpatched pre-existing video would have silently vanished from every built-in department feed the moment this deployed — this was not anticipated in the original design doc and was only caught because `tests/test_houses.py`'s existing suite regressed against a live database. Fixed with an idempotent backfill in `_ensure_schema()`: every video with zero tag rows gets a primary tag equal to its creator's *current* department, on every startup, `WHERE NOT EXISTS` so it can never overwrite a real tag set written after this feature shipped.
+
+### API surface
+- `POST /videos` gains an optional `departments` form field (comma-separated additional departments; primary is never client-supplied — the server always derives it server-side from `users.department`, regardless of what the client sends). Validated against the canonical `DEPARTMENTS` list (400 on any unknown value) and capped at `MAX_ADDITIONAL_DEPARTMENTS = 5` (400 if exceeded).
+- New `POST /videos/{id}/departments` / `DELETE /videos/{id}/departments/{department}` — owner-only (new `_require_video_owner` dependency, mirrors `_require_house_owner`), for post-upload editing of *additional* tags only. The primary tag is not reachable through either route at all — "cannot be removed" is enforced by never exposing the operation, with a second layer of defense at the `db.py` level (`remove_video_department_tag` silently no-ops if the target row `is_primary`), so the guarantee holds even against a direct DB-layer call that skips the route entirely.
+- `get_department_house_feed` rewritten from `WHERE u.department = %s` (creator's own department) to `WHERE EXISTS (SELECT 1 FROM video_department_tags WHERE department = %s)` (any tag match) — a deliberate behavior change, not a pure refactor.
+- `_enrich()` now batch-attaches `department_tags` to every feed row (`get_department_tags_for_videos`, one query for N videos, not N+1).
+
+### Frontend
+- `frontend/app/upload/page.tsx`: department picker below the format toggle. Primary department renders as a locked, non-interactive chip (🔒 + "— Main Department" label, not color alone) sourced from the locally-cached user for display only — never sent as part of the upload, since the server independently re-derives it. Additional-department buttons exclude the primary from their own option list entirely (never offered as a duplicate pick, not just rejected after the fact) and disable further selection past the 5-tag cap.
+- Post-upload result card and `GET /videos/{id}/status` both render the full tag set with the same locked/unlocked visual distinction.
+
+### A real bug found via testing, not code review
+FastAPI does not automatically treat a plain `str` parameter as a form field when the route also has an `UploadFile` parameter — it needs explicit `Form(...)` typing. Without it, the `departments` field silently failed to bind, and the intended 400 validation (invalid department name, too many additional departments) never fired — a request with a bad department fell straight through to the real S3 upload call instead of being rejected. Caught by running the actual test suite against a live Postgres + attempted-S3 call (not by reading the code), fixed by declaring `departments: str = Form("")`.
+
+### Verification
+- `tests/test_department_tags.py` (new, 26 tests): schema/backfill correctness, primary-tag DB-level uniqueness enforcement, add/remove-tag defense-in-depth on the primary, batch tag fetch, tag-based feed membership, upload-route validation ordering, ownership checks on the tag-management routes — all run against a live disposable Postgres (`docker compose up -d postgres`), not mocked.
+- `tests/test_houses.py`: `make_video` fixture updated to also write a primary tag (matching what a real upload now does), its local `DEPARTMENTS` stub resynced to the real 29-department list (was stale at the original 9) — both were pre-existing gaps this change surfaced, not new to this feature. Full 36-test suite passes with no other changes.
+- 3 of the 26 new tests are marked `skipif` without real AWS credentials (they need a successful S3 upload to complete) — the other 23, including both validation-ordering tests, always run. `tests/test_decision_engine.py`'s 14 tests unaffected.
+- `tsc --noEmit` — clean. `eslint` — clean on both modified frontend files.
+- Not yet deployed to EC2 as of this entry.

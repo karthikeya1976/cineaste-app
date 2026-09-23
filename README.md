@@ -107,8 +107,10 @@ Content   (Sightengine) Content    Relevance
 | POST | `/auth/register` | — | Create account |
 | POST | `/auth/login` | — | Get JWT token |
 | POST | `/auth/upgrade` | JWT | Upgrade viewer → creator |
-| POST | `/videos` | JWT (creator) | Upload video for moderation |
-| GET | `/videos/{job_id}/status` | — | Poll moderation result |
+| POST | `/videos` | JWT (creator) | Upload video for moderation; optional `departments` form field (comma-separated additional department tags — primary tag is always server-derived from the uploader's department) |
+| GET | `/videos/{job_id}/status` | — | Poll moderation result (includes `department_tags`) |
+| POST | `/videos/{job_id}/departments` | JWT (owner) | Add one additional department tag (primary tag not reachable here) |
+| DELETE | `/videos/{job_id}/departments/{department}` | JWT (owner) | Remove one additional department tag (no-op if targeting the primary) |
 | GET | `/videos/{job_id}/comments` | — | List comments |
 | POST | `/videos/{job_id}/comments` | JWT (query param) | Post a comment |
 | POST | `/videos/{job_id}/credit` | — | Give a credit to the creator |
@@ -136,11 +138,16 @@ videos   (id TEXT, filename, file_path, status, overall_status,
 follows  (follower_id UUID, following_id UUID, created_at)  -- PK both columns
 comments (id UUID, video_id TEXT, user_id UUID, body, created_at)
 
--- Houses: built-in Houses (one per department) have no table, derived from
--- users.department at query time. Only custom Houses are real rows.
+-- Houses: custom Houses are real rows; built-in (department) Houses have no
+-- table — membership is derived from video_department_tags at query time.
 houses                 (id TEXT, owner_id UUID, name, description, created_at)
 house_creator_members  (house_id TEXT, creator_id UUID, added_at)  -- PK both columns
 house_video_members    (house_id TEXT, video_id TEXT, added_at)    -- PK both columns
+
+-- Multi-department content tagging: one row per (video, department).
+-- Exactly one is_primary=TRUE row per video, DB-enforced via a partial
+-- unique index (idx_video_dept_tags_one_primary ON video_id WHERE is_primary).
+video_department_tags  (video_id TEXT, department, is_primary BOOLEAN, tagged_at)  -- PK (video_id, department)
 ```
 
 ---

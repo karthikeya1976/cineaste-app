@@ -3,7 +3,7 @@ import tempfile
 import uuid
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from passlib.context import CryptContext
 from jose import jwt, JWTError
@@ -45,6 +45,12 @@ DEPARTMENTS = [
     "Prosthetics & Creature Design", "Colorist / Post-Production",
     "Animation", "Other",
 ]
+
+# Open product decision from the design doc, resolved here: caps how many
+# ADDITIONAL departments (beyond the auto-included primary) one video can
+# carry. Keeps a department tag a meaningful browsing signal rather than a
+# video appearing in most/all department feeds at once.
+MAX_ADDITIONAL_DEPARTMENTS = 5
 
 app.add_middleware(
     CORSMiddleware,
@@ -154,7 +160,37 @@ def _require_creator(token: str = Depends(oauth2_scheme)) -> str:
 
 
 @app.post("/videos")
-async def upload_video(file: UploadFile, user_id: str = Depends(_require_creator)) -> dict:
+async def upload_video(
+    file: UploadFile,
+    departments: str = Form(""),
+    user_id: str = Depends(_require_creator),
+) -> dict:
+    """departments is an optional comma-separated list of ADDITIONAL department
+    tags (the primary tag is never client-supplied — see set_video_department_tags
+    docstring / design doc edge case: the server always derives the primary
+    from the uploader's current users.department, regardless of what the
+    client sends). Sent as a plain form field alongside the file, matching
+    this endpoint's existing multipart/form-data shape (no JSON body today).
+
+    Form(...) is required here, not a bare str default: a route that mixes
+    UploadFile with a plain-str parameter does NOT automatically treat the
+    latter as a form field — without this, departments silently binds to
+    nothing/a query param instead of the multipart body, and the 400
+    validation below never fires (confirmed the hard way: a request with an
+    invalid department fell through to the S3 upload instead of rejecting)."""
+    user = db.get_user_by_id(user_id)
+    primary_department = user["department"] if user else None
+
+    additional = [d.strip() for d in departments.split(",") if d.strip()]
+    invalid = [d for d in additional if d not in DEPARTMENTS]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid department(s): {', '.join(invalid)}")
+    if len(additional) > MAX_ADDITIONAL_DEPARTMENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"At most {MAX_ADDITIONAL_DEPARTMENTS} additional departments allowed",
+        )
+
     task_id = str(uuid.uuid4())
     object_name = f"{task_id}.mp4"
 
@@ -166,6 +202,8 @@ async def upload_video(file: UploadFile, user_id: str = Depends(_require_creator
         file_path = storage.save_video(object_name, tmp_path)
 
     db.create_job(task_id, file.filename or object_name, file_path, user_id=user_id)
+    if primary_department:
+        db.set_video_department_tags(task_id, primary_department, additional)
     process_video.delay(task_id)
 
     # Flow-graph response: instant acknowledgment with tracking ID
@@ -176,14 +214,18 @@ def _enrich(jobs: list) -> list:
     """Shared enrichment transform for any list of raw video rows (dicts with
     a '_id' key from db.py) headed to the frontend: renames '_id' -> 'job_id'
     (the frontend Job type has no _id field), 'pillar_results' -> 'pillars',
-    and converts file_path (an s3://... URI) into a real playable video_url
-    via a live presigned-URL call. None of this is a DB column — every route
-    returning Job-shaped rows (GET /feed, GET /houses/{id}/feed,
-    GET /houses/department/{name}/feed) must run its rows through this exact
-    helper, not a re-implementation, or cards silently render with no
-    job_id/video_url ("No video available")."""
+    attaches department_tags (batch-fetched, not N+1), and converts file_path
+    (an s3://... URI) into a real playable video_url via a live presigned-URL
+    call. None of this is a DB column — every route returning Job-shaped rows
+    (GET /feed, GET /houses/{id}/feed, GET /houses/department/{name}/feed)
+    must run its rows through this exact helper, not a re-implementation, or
+    cards silently render with no job_id/video_url ("No video available")."""
+    ids = [j["_id"] for j in jobs]
+    tags_by_video = db.get_department_tags_for_videos(ids)
     for j in jobs:
-        j["job_id"] = j.pop("_id")
+        video_id = j.pop("_id")
+        j["job_id"] = video_id
+        j["department_tags"] = tags_by_video.get(video_id, [])
         if "pillar_results" in j:
             j["pillars"] = j.pop("pillar_results")
         file_path = j.get("file_path", "")
@@ -238,7 +280,47 @@ def get_status(job_id: str) -> dict:
     job["job_id"] = job.pop("_id")
     if "pillar_results" in job:
         job["pillars"] = job.pop("pillar_results")
+    job["department_tags"] = db.get_video_department_tags(job_id)
     return job
+
+
+# ── Video department tags ────────────────────────────────────────────────────
+# Post-upload editing of ADDITIONAL tags only — the primary tag is written
+# once at upload time (set_video_department_tags) and is not reachable
+# through either of these routes at all, by design (design doc edge case:
+# "the primary can never be removed" is enforced by never exposing the
+# operation, not by rejecting it after the fact).
+
+def _require_video_owner(job_id: str, token: str = Depends(oauth2_scheme)) -> str:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        user_id = payload["sub"]
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if job.get("user_id") != user_id:
+        raise HTTPException(status_code=403, detail="Only the video's creator can do this")
+    return user_id
+
+
+class AddDepartmentTagRequest(BaseModel):
+    department: str
+
+
+@app.post("/videos/{job_id}/departments")
+def add_department_tag(job_id: str, req: AddDepartmentTagRequest, _owner_id: str = Depends(_require_video_owner)) -> dict:
+    if req.department not in DEPARTMENTS:
+        raise HTTPException(status_code=400, detail="Invalid department")
+    db.add_video_department_tag(job_id, req.department)
+    return {"department_tags": db.get_video_department_tags(job_id)}
+
+
+@app.delete("/videos/{job_id}/departments/{department}")
+def remove_department_tag(job_id: str, department: str, _owner_id: str = Depends(_require_video_owner)) -> dict:
+    db.remove_video_department_tag(job_id, department)
+    return {"department_tags": db.get_video_department_tags(job_id)}
 
 
 # ── Credits ───────────────────────────────────────────────────────────────────

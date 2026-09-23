@@ -22,6 +22,11 @@ export type PillarResult = {
   flags: PillarFlag[];
 };
 
+export type DepartmentTag = {
+  department: string;
+  is_primary: boolean;
+};
+
 export type Job = {
   job_id: string;
   filename: string;
@@ -34,6 +39,7 @@ export type Job = {
   user_id?: string;
   creator_name?: string;
   creator_department?: string;
+  department_tags?: DepartmentTag[];
   video_url?: string | null;
   created_at: string;
   updated_at: string;
@@ -105,11 +111,15 @@ export async function upgradeToCreator(
 // ── Videos ─────────────────────────────────────────────────────────────────
 
 export async function uploadVideo(
-  file: File
+  file: File,
+  additionalDepartments: string[] = []
 ): Promise<{ task_id: string; status: string }> {
   const token = getToken();
   const form = new FormData();
   form.append("file", file);
+  if (additionalDepartments.length > 0) {
+    form.append("departments", additionalDepartments.join(","));
+  }
   const res = await fetch(`${API}/videos`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
@@ -119,6 +129,34 @@ export async function uploadVideo(
     const err = await res.json();
     throw new Error(err.detail ?? `Upload failed: ${res.status}`);
   }
+  return res.json();
+}
+
+// Post-upload editing of ADDITIONAL tags only — there is no client-facing way
+// to change or remove a video's primary department tag; the server never
+// exposes that operation (see backend's _require_video_owner routes).
+
+export async function addDepartmentTag(jobId: string, department: string): Promise<{ department_tags: DepartmentTag[] }> {
+  const token = getToken();
+  const res = await fetch(`${API}/videos/${jobId}/departments`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ department }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail ?? "Add department failed");
+  }
+  return res.json();
+}
+
+export async function removeDepartmentTag(jobId: string, department: string): Promise<{ department_tags: DepartmentTag[] }> {
+  const token = getToken();
+  const res = await fetch(`${API}/videos/${jobId}/departments/${encodeURIComponent(department)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Remove department failed");
   return res.json();
 }
 
