@@ -342,3 +342,18 @@ FastAPI does not automatically treat a plain `str` parameter as a form field whe
 - 3 of the 26 new tests are marked `skipif` without real AWS credentials (they need a successful S3 upload to complete) — the other 23, including both validation-ordering tests, always run. `tests/test_decision_engine.py`'s 14 tests unaffected.
 - `tsc --noEmit` — clean. `eslint` — clean on both modified frontend files.
 - Not yet deployed to EC2 as of this entry.
+
+## 2026-09-23 — Renamed to Cineaste
+
+Product renamed from "Editor Club" to "Cineaste" across all user-visible branding and doc/prose titles.
+
+- **User-visible**: nav bar full name (`frontend/components/nav-bar.tsx`) and collapsed monogram ("EC" → "Ci"); browser tab title (`frontend/app/layout.tsx`) — this was actually still "Redactor" (a leftover from an even earlier name, never updated when the product became "Editor Club"), so this fixes a real stale-title bug, not just a rename; the login page's own brand heading (`frontend/app/page.tsx`) had the same "Redactor" staleness — also fixed; creator-profile bio fallback text, search page empty-state copy, messenger compose empty-state copy.
+- **Doc/prose titles**: `CLAUDE.md`, `README.md`, `docs/architecture.md`, `docs/moderation_policies.md`, `docs/project_status.md` top-level headers; `docs/private-notes.md` (untracked, local-only, updated for consistency); `scripts/scan-repo.py`'s CLI description and banner output; code comments referencing the product name by prose in `backend/app/pillars/duplicate_content.py`, `backend/app/pillars/filmmaking_relevance.py`, `frontend/lib/gatekept-api.ts`, `frontend/components/CryptoNotice.tsx`, `frontend/app/messages/compose/page.tsx`, `frontend/next.config.ts`.
+- **Deliberately NOT renamed** (real infrastructure identifiers, not branding — confirmed with the user before proceeding): the live DNS hostname `redactor-api.duckdns.org`, systemd service names (`redactor-api`/`redactor-celery`), CloudFormation stack/resource names and tags (`infra/cloudformation.yml`, `docs/private-notes.md`'s `editorclub-v1` stack name), the `redactor_token`/`redactor_user` localStorage key prefixes (renaming these would silently log out every existing user), the Postgres password, and the CI bot username (`editor-club-bot` in `.github/workflows/update-baseline.yml`). Renaming these is a separate, riskier infra task (DNS, EC2 service restarts, redeploys, forced logout) explicitly deferred.
+- **Deliberately NOT renamed**: dated historical changelog/project_status entries (e.g. "Redactor MVP (2026-09-08)", "Editor Club — Social Features (2026-09-10)") — these describe what the product was actually called on that date and are left as an accurate historical record, same treatment as this file's other dated entries.
+- **GitHub repo**: renamed via `gh repo rename`; local remote URL updated to match.
+
+### Verification
+- `tsc --noEmit` — clean. `eslint` — clean on every modified frontend file. `py_compile` — clean on both modified pillar files and `scripts/scan-repo.py`.
+- `scripts/scan-repo.py` run post-rename — 0 new issues (banner itself now reads "Cineaste — Repo Health Scan").
+- Full repo-wide case-insensitive grep for "editor club" / "editor-club" / "editorclub" confirms only the deliberately-preserved infra identifiers and historical dated entries remain.

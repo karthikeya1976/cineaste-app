@@ -1,4 +1,4 @@
-# Architecture — Editor Club
+# Architecture — Cineaste
 
 ## System Diagram
 
@@ -248,7 +248,7 @@ Returns `{overall_status, reasons}` written back to the DB row.
 `/messages` itself redirects to `/messages/conversations` — there is no longer a standalone tab bar switching between New Message / Requests / Conversations views (removed in favor of landing directly on Conversations, with Requests reachable via a link and a pending-count badge).
 
 **Shared components**
-- `components/nav-bar.tsx` — collapsible sidebar: "EC" monogram collapsed, "Editor Club" expanded; Home, Search, Houses, Messages (badge dot for pending requests/unread), Upload (creator only), Profile (pinned bottom). The Messages link routes to `/messages/requests` while the badge is visible, `/messages/conversations` otherwise — scoped only to the Messages item, since a past regression once let this fallback apply to every nav item's `href`. The Houses entry is a plain link (no `creatorOnly`, no badge) — visible to every logged-in user.
+- `components/nav-bar.tsx` — collapsible sidebar: "Ci" monogram collapsed, "Cineaste" expanded; Home, Search, Houses, Messages (badge dot for pending requests/unread), Upload (creator only), Profile (pinned bottom). The Messages link routes to `/messages/requests` while the badge is visible, `/messages/conversations` otherwise — scoped only to the Messages item, since a past regression once let this fallback apply to every nav item's `href`. The Houses entry is a plain link (no `creatorOnly`, no badge) — visible to every logged-in user.
 - `components/MessageActionMenu.tsx`, `components/DaySeparator.tsx`, `components/OffensiveBanner.tsx` — thread-view building blocks for U5/U6/U7 of the messenger channel fixes (see Feed Gestures and the changelog for the full list)
 - `components/ThumbnailStrip.tsx`, `components/VideoThumbnail.tsx` — the feed's long-press jump-to-video picker (see Feed Gestures below)
 

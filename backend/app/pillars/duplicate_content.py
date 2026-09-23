@@ -3,7 +3,7 @@
 Downloads the uploaded video and computes its SHA-256 hash. Checks the
 database for any previously approved video with the same hash. If a match
 is found, the video is flagged as duplicate — ensuring each creator's work
-appears only once on the Redactor platform.
+appears only once on the Cineaste platform.
 
 Score: 0.0 (unique) → 1.0 (exact duplicate found).
 Threshold: score >= 1.0 → flagged.

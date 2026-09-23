@@ -14,7 +14,7 @@ const BACKEND =
 //   (Nginx on the shared EC2 box strips the /gatekept prefix before proxying
 //   to Gatekept's Express app, which has no path prefix of its own.)
 // - Locally:                → http://localhost:4000
-//   (Gatekept's own default dev port, distinct from Editor Club's :8088;
+//   (Gatekept's own default dev port, distinct from Cineaste's :8088;
 //   no /gatekept segment since there's no Nginx in front locally.)
 const GATEKEPT_BACKEND =
   process.env.VERCEL

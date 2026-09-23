@@ -1,4 +1,4 @@
-# Project Status — Editor Club
+# Project Status — Cineaste
 
 ## Phase 0: Environment Setup ✅
 - [x] Python 3.11+ installed and verified (3.12.10)

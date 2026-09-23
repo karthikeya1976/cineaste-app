@@ -1,4 +1,4 @@
-# Editor Club
+# Cineaste
 
 A filmmaker discovery platform with AI-powered video moderation.  
 FastAPI + Celery + Redis + PostgreSQL backend on AWS EC2.  
