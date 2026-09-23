@@ -12,9 +12,29 @@ import {
   unsubscribeFromPush,
 } from "@/lib/gatekept-api";
 
+// Standard film/TV production departments — department-head level (matches
+// how crews are actually organized on a real call sheet), not individual job
+// titles within a department (e.g. "Camera" here, not "1st AC"/"2nd AC"
+// separately — keeping this list flat-select-friendly rather than needing a
+// searchable/filterable picker). The original 9 entries are preserved
+// verbatim and in their original relative order (any existing
+// users.department value must keep matching exactly) with new department-
+// level categories added around them; "Other" moved to the end as the
+// catch-all it's meant to be.
+//
+// MUST be kept byte-for-byte in sync with backend/app/main.py's own
+// DEPARTMENTS constant — the backend validates POST /auth/upgrade's
+// department field against its copy (see that file's comment for why no
+// single shared source exists yet).
 const DEPARTMENTS = [
   "Cinematography", "Directing", "Screenwriting", "Editing",
-  "Sound Design", "Visual Effects", "Production Design", "Acting", "Other",
+  "Sound Design", "Visual Effects", "Production Design", "Acting",
+  "Producing", "Camera", "Grip & Electric", "Art Department",
+  "Set Decoration", "Costume Design", "Hair & Makeup", "Sound Recording",
+  "Music", "Special Effects", "Stunts", "Casting", "Locations",
+  "Production Management", "Script Supervision", "Continuity",
+  "Colorist / Post-Production", "Animation", "Transportation",
+  "Catering & Craft Services", "Other",
 ];
 
 const inputStyle: React.CSSProperties = {
