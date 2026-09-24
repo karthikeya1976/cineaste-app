@@ -1,0 +1,169 @@
+name: R&D Department — Approval Watcher
+
+# Fires on a comment on any PR (the R&D Department design doc's Human
+# Checkpoint: a founder comments /approve on a plan-only PR, or merges it
+# manually). This workflow's FIRST job (validate-approval) is fully built
+# and tested without any external dependency — pure git/gh CLI logic, no
+# Claude invocation. The SECOND job (dispatch-workers) calls
+# compute_worker_matrix.py (pure logic, unit-tested against this repo's
+# real Houses plan doc — see tests/test_compute_worker_matrix.py) to
+# compute the wave schedule, but the actual per-unit Worker Agent
+# invocation step is NOT YET VERIFIED end-to-end: it needs a real
+# ANTHROPIC_API_KEY and a real approved plan to run against, neither of
+# which existed at the time this workflow was written. Treat
+# dispatch-workers as a documented, best-effort first implementation —
+# dry-run it manually (workflow_dispatch) against a real small plan
+# before trusting it on a real /approve.
+on:
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to validate/dispatch (for a manual dry run)"
+        required: true
+        type: number
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+jobs:
+  # ── Fully built and tested: no Claude invocation, no untested surface ──
+  # Confirms the triggering PR is (a) actually a plan-only PR — its diff
+  # touches nothing outside docs/plans/ — and (b) actually approved, per
+  # the design doc's exact trigger condition: an explicit /approve comment
+  # from someone with write access, OR the PR being merged (not just
+  # closed). Fails closed on anything ambiguous: this job's whole purpose
+  # is to be the one place a false positive here would be worse than a
+  # missed cycle.
+  validate-approval:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/approve')) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true) ||
+      github.event_name == 'workflow_dispatch'
+    outputs:
+      approved: ${{ steps.check.outputs.approved }}
+      pr_number: ${{ steps.check.outputs.pr_number }}
+      plan_path: ${{ steps.check.outputs.plan_path }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "number=${{ github.event.inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify commenter has write access (issue_comment path only)
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          perm=$(gh api "repos/${{ github.repository }}/collaborators/${{ github.event.comment.user.login }}/permission" --jq '.permission')
+          echo "Commenter permission: $perm"
+          if [ "$perm" != "admin" ] && [ "$perm" != "write" ]; then
+            echo "Commenter does not have write access — /approve from a non-collaborator does not count."
+            echo "This is the one check in this whole system where 'fail closed' matters most."
+            exit 1
+          fi
+
+      - name: Validate this is genuinely a plan-only PR
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pr_number="${{ steps.pr.outputs.number }}"
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+
+          changed_files=$(gh pr diff "$pr_number" --name-only)
+          echo "Changed files in PR #$pr_number:"
+          echo "$changed_files"
+
+          # Per the design doc's Human Checkpoint section: "this PR's
+          # entire diff is one new markdown file" under docs/plans/. Any
+          # other changed file at all means this is NOT the plan-only PR
+          # the checkpoint requires — fail closed rather than guess.
+          non_plan_files=$(echo "$changed_files" | grep -v '^docs/plans/' || true)
+          plan_files=$(echo "$changed_files" | grep '^docs/plans/' || true)
+          plan_file_count=$(echo "$plan_files" | grep -c . || true)
+
+          if [ -n "$non_plan_files" ]; then
+            echo "REJECTED: PR #$pr_number touches files outside docs/plans/:"
+            echo "$non_plan_files"
+            echo "approved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$plan_file_count" != "1" ]; then
+            echo "REJECTED: PR #$pr_number must add exactly ONE new plan document, found $plan_file_count."
+            echo "approved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "plan_path=$plan_files" >> "$GITHUB_OUTPUT"
+          echo "approved=true" >> "$GITHUB_OUTPUT"
+          echo "Validated: PR #$pr_number is a genuine plan-only PR ($plan_files)."
+
+  # ── NOT YET VERIFIED end-to-end — see the header note above ───────────
+  dispatch-workers:
+    needs: validate-approval
+    if: needs.validate-approval.outputs.approved == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compute the dependency-ordered worker wave schedule
+        id: matrix
+        run: |
+          python scripts/compute_worker_matrix.py --plan "${{ needs.validate-approval.outputs.plan_path }}" > /tmp/waves.json
+          cat /tmp/waves.json
+
+      - name: Report the computed schedule
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "${{ needs.validate-approval.outputs.pr_number }}" --body "$(cat <<EOF
+          ## R&D Department: plan approved, dispatch schedule computed
+
+          $(cat /tmp/waves.json | python -c "import json,sys; d=json.load(sys.stdin); print('\n'.join(f'**Wave {i}:** ' + ', '.join(u['unit'] for u in w) for i, w in enumerate(d['waves'])))")
+
+          **This is as far as this system currently goes.** The per-unit
+          Worker Agent dispatch step (one headless Claude Code invocation
+          per unit, per wave, each on its own branch, opening its own PR
+          against \`pr-review-bot.yml\`'s existing gate) is designed but
+          NOT YET IMPLEMENTED in this workflow — it needs a real
+          ANTHROPIC_API_KEY and a real approved plan to build and verify
+          against safely, neither of which existed when this scaffolding
+          was written. See \`docs/rd-department-setup.md\` for what's left.
+          EOF
+          )"
+
+      # TODO (design doc Section 4, not yet implemented — see the report
+      # comment above): for each wave in sequence, for each unit in that
+      # wave in parallel (a real GitHub Actions matrix job), invoke a
+      # Worker Agent via anthropics/claude-code-action, scoped to that
+      # unit's declared file list (design doc: "no worker touches a file
+      # outside its assigned unit's declared file list", enforced by
+      # scripts/check_worker_file_scope.py once the worker's PR exists).
+      # This step is intentionally left unwritten rather than shipped
+      # with confidently-wrong, unverified claude_args syntax.

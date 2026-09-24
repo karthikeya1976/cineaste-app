@@ -1,0 +1,166 @@
+name: R&D Department — Research & Propose
+
+# Scheduled trigger (per the design doc's Section 07/Reality Check —
+# GitHub Actions is the only DURABLE scheduler available; a session-
+# internal cron dies with the session and expires after 7 days either
+# way). Disabled by default: the cron line below is commented out until
+# ANTHROPIC_API_KEY is actually provisioned as a repo secret — see the
+# NOT YET ENABLED note below. workflow_dispatch (manual trigger) always
+# works regardless, for a supervised dry run before the real schedule
+# goes live (design doc Section 8's own checklist item).
+on:
+  # schedule:
+  #   - cron: "17 9 * * *"  # ~9:17am UTC daily — off the :00/:30 mark on purpose
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — skip the actual Claude invocation, only verify prerequisites"
+        type: boolean
+        default: true
+
+# GitHub attributes a schedule trigger's "write access" check-skip to
+# whoever last edited the cron line (see code.claude.com/docs/en/github-
+# actions#who-can-trigger-runs) — worth knowing before enabling the real
+# schedule, not a concern for workflow_dispatch (which still requires
+# repo write access to invoke at all).
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+  id-token: write
+
+concurrency:
+  group: rd-department-research
+  cancel-in-progress: false  # never cancel a cycle mid-run — let it finish or fail cleanly
+
+jobs:
+  research-and-propose:
+    runs-on: ubuntu-latest
+    # Real per-run cost/time ceiling — GitHub Actions' own timeout-minutes,
+    # since Claude Code's CLI (confirmed against the current first-party
+    # docs, code.claude.com/docs/en/headless and
+    # code.claude.com/docs/en/github-actions) has no --max-budget-usd or
+    # similar dollar-cap flag. The real, confirmed cost controls are:
+    # --max-turns (below), this job-level wall-clock timeout, and this
+    # workflow's own concurrency group (so a slow cycle can never overlap
+    # with the next scheduled one and double-spend).
+    timeout-minutes: 30
+    steps:
+      - name: Check prerequisites
+        id: precheck
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "ANTHROPIC_API_KEY is not set as a repo secret yet."
+            echo "This is expected until Phase 1's scaffolding-only rollout is followed by"
+            echo "actually provisioning the key (see docs/rd-department-setup.md)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.precheck.outputs.ready == 'true' && github.event.inputs.dry_run != 'true'
+        with:
+          fetch-depth: 1
+
+      # ── R&D Decision Agent (design doc Section 2) — proposes ─────────────
+      # Automation-mode invocation (prompt input set directly, no @mention
+      # needed — confirmed real per code.claude.com/docs/en/github-actions'
+      # "Interactive and automation modes" section). Reads this repo's own
+      # research inputs (design doc Section 6): docs/project_status.md's
+      # Pending section, docs/rd-research-log.md's own history (so it
+      # doesn't re-propose an already-rejected idea), and recent commits.
+      - name: R&D Decision Agent — propose
+        id: decision_agent
+        if: steps.precheck.outputs.ready == 'true' && github.event.inputs.dry_run != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the R&D Decision Agent for this repo (see the published
+            architecture doc this workflow implements). Read
+            docs/project_status.md's Pending/Future section,
+            docs/rd-research-log.md's prior entries (do not re-propose
+            anything already logged as rejected for a stated reason), and
+            recent commit history. If you find one clear, boundable
+            improvement worth proposing, write a candidate proposal
+            (problem statement, why now, rough shape of the fix) to
+            /tmp/rd-proposal-draft.md. If nothing clear stands out this
+            cycle, write "NO PROPOSAL: <one-line reason>" to that same
+            file instead — a quiet cycle is a normal, expected outcome,
+            not a failure to force past.
+          claude_args: |
+            --bare
+            --max-turns 8
+            --allowedTools "Read,Bash(git log *),Bash(git diff *)"
+            --permission-mode dontAsk
+            --permission-prompts none
+            --output-format json
+
+      # ── Tech Lead Agent (design doc Section 2/3) — reviews, same session ──
+      # --resume with the Decision Agent's own session_id (extracted from
+      # the prior step's JSON output) is what makes this a genuinely joint
+      # decision rather than two independent single-shot calls reconciled
+      # after the fact — confirmed real via code.claude.com/docs/en/headless's
+      # "Continue conversations" section (session_id + --resume pattern).
+      - name: Tech Lead Agent — review, same session
+        id: tech_lead_agent
+        if: steps.precheck.outputs.ready == 'true' && github.event.inputs.dry_run != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the Tech Lead / Staff Engineer Agent, reviewing the
+            proposal at /tmp/rd-proposal-draft.md that you (in the
+            Decision Agent role, same session) just wrote. Evaluate it for
+            architectural fit, blast radius, and test/rollback strategy —
+            this repo's own existing plan docs under docs/plans/ show the
+            expected level of rigor (Key Technical Decisions with stated
+            rationale, explicit Scope Boundaries, per-unit Test scenarios).
+
+            If the proposal was "NO PROPOSAL: ...", do nothing further —
+            exit cleanly.
+
+            Otherwise, produce ONE of:
+            (a) an endorsed plan document, following
+                docs/plans/templates/rd-proposal-template.md exactly,
+                written to docs/plans/<today's date>-NNN-rd-proposal-<slug>.md
+                (check existing docs/plans/ filenames to pick the next NNN
+                for today's date), with its Decision Record section filled
+                in (Proposed by / Reviewed by / Outcome / Confidence /
+                High-risk areas flagged), OR
+            (b) a rejection — do not write a plan document; instead append
+                one entry to docs/rd-research-log.md explaining what was
+                rejected and why, following that file's own entry format.
+
+            If (a): create a new branch (rd-proposal/<slug>), commit ONLY
+            the new plan document (no code changes — the design doc's
+            Human Checkpoint section requires this PR's entire diff to be
+            exactly one new markdown file), push it, and open a draft PR
+            against main with a clear title. Do NOT merge it — a human
+            reviewer approving via an explicit /approve comment or manual
+            merge is the design's mandatory checkpoint (see
+            .github/workflows/rd-approval-watcher.yml), and this step must
+            never bypass it.
+          claude_args: |
+            --bare
+            --continue
+            --max-turns 12
+            --allowedTools "Read,Edit,Bash(git *),Bash(gh pr create *)"
+            --permission-mode dontAsk
+            --permission-prompts none
+            --output-format json
+
+      - name: Report outcome to the run summary
+        if: always()
+        run: |
+          if [ "${{ steps.precheck.outputs.ready }}" != "true" ]; then
+            echo "## R&D Department cycle: skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "ANTHROPIC_API_KEY is not yet provisioned. See docs/rd-department-setup.md." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+            echo "## R&D Department cycle: dry run only" >> "$GITHUB_STEP_SUMMARY"
+            echo "Prerequisites checked, no agents invoked (dry_run input was true)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## R&D Department cycle: ran" >> "$GITHUB_STEP_SUMMARY"
+            echo "Check the Decision Agent and Tech Lead Agent step logs above for this cycle's outcome." >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -218,6 +218,17 @@
 - [ ] `gitleaks` (content-based secret scanning) deferred — needs a GitHub App/license setup not provisionable from this session
 - [ ] Not yet deployed to EC2
 
+### R&D Agent Department: Scaffolding ✅ (dispatch not yet implemented, no API key provisioned)
+- [x] `docs/plans/templates/rd-proposal-template.md`, `docs/rd-research-log.md` — extends this repo's existing plan-doc convention
+- [x] `scripts/check_worker_file_scope.py` — file-scope enforcement, verified against the real Houses plan doc, not just fixtures
+- [x] `scripts/compute_worker_matrix.py` — dependency-ordered wave scheduling, verified against the real Houses plan doc (found and fixed a real parenthetical-parsing bug in the process)
+- [x] `.github/workflows/rd-approval-watcher.yml`'s `validate-approval` job — plan-only-PR + write-access checks, no Claude invocation, fully verifiable without an API key
+- [x] `.github/workflows/rd-department.yml` — Decision Agent → Tech Lead Agent (session-resumed), cron disabled by default, `workflow_dispatch` dry-run only until a key is provisioned
+- [x] Corrected a real inaccuracy in the published design doc via primary-source research: no `--max-budget-usd` flag exists; real cost controls are `--max-turns` + job `timeout-minutes` + a `concurrency` group
+- [ ] `ANTHROPIC_API_KEY` not provisioned — nothing in either workflow can actually invoke Claude yet
+- [ ] `dispatch-workers`' actual per-unit Worker Agent invocation step — documented `TODO`, deliberately unwritten (see `docs/rd-department-setup.md`)
+- [ ] Real end-to-end dry run (manual `workflow_dispatch`) not yet performed — first real invocation should be closely supervised, not the real cron
+
 ## Pending / Future
 - [ ] Creator profile: list their approved videos inline
 - [ ] Notifications for new followers and credits received
